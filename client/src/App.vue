@@ -1,33 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { Engine } from './core/Engine'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+let engine: Engine | null = null
 
 onMounted(() => {
   if (canvasRef.value) {
-    const canvas = canvasRef.value
-    const ctx = canvas.getContext('2d')
+    // Initialize and start the game engine
+    engine = new Engine(canvasRef.value)
+    engine.start()
+  }
+})
 
-    // Set canvas size to window size
-    const resizeCanvas = () => {
-      canvas.width = window.innerWidth
-      canvas.height = window.innerHeight - 50 // Account for header
-    }
-
-    resizeCanvas()
-    window.addEventListener('resize', resizeCanvas)
-
-    // Simple test: draw a dark background
-    if (ctx) {
-      ctx.fillStyle = '#1a1a1a'
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-      // Draw some text in the center
-      ctx.fillStyle = '#42b883'
-      ctx.font = '24px sans-serif'
-      ctx.textAlign = 'center'
-      ctx.fillText('Game Canvas Ready', canvas.width / 2, canvas.height / 2)
-    }
+onBeforeUnmount(() => {
+  // Clean up when component is destroyed
+  if (engine) {
+    engine.stop()
   }
 })
 </script>
