@@ -53,6 +53,7 @@ export class Renderer {
     // Render game world
     this.renderGrid()
     this.renderEntities()
+    this.renderMoveTarget()
     this.renderSelectionBox()
 
     // Reset transform for UI elements
@@ -148,6 +149,34 @@ export class Renderer {
         this.ctx.fillStyle = '#00ff00'
         this.ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight)
       }
+    }
+  }
+
+  /**
+   * Render move target marker
+   */
+  private renderMoveTarget(): void {
+    const moveTarget = this.inputManager.getMouseHandler().getMoveTarget()
+
+    if (moveTarget) {
+      const age = Date.now() - moveTarget.timestamp
+      const opacity = Math.max(0, 1 - age / 1000) // Fade out over 1 second
+
+      // Draw target marker circle
+      this.ctx.strokeStyle = `rgba(0, 255, 0, ${opacity})`
+      this.ctx.lineWidth = 2 / this.camera.zoom
+      this.ctx.beginPath()
+      this.ctx.arc(moveTarget.x, moveTarget.y, 15, 0, Math.PI * 2)
+      this.ctx.stroke()
+
+      // Draw crosshair
+      const crossSize = 10
+      this.ctx.beginPath()
+      this.ctx.moveTo(moveTarget.x - crossSize, moveTarget.y)
+      this.ctx.lineTo(moveTarget.x + crossSize, moveTarget.y)
+      this.ctx.moveTo(moveTarget.x, moveTarget.y - crossSize)
+      this.ctx.lineTo(moveTarget.x, moveTarget.y + crossSize)
+      this.ctx.stroke()
     }
   }
 

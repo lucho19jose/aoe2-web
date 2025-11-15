@@ -1,5 +1,6 @@
 import { Camera } from '@/rendering/Camera'
 import { EntityManager } from '@/core/EntityManager'
+import { MovementSystem } from '@/game-logic/systems/MovementSystem'
 import { MouseHandler } from './MouseHandler'
 
 /**
@@ -12,9 +13,10 @@ export class InputManager {
   constructor(
     canvas: HTMLCanvasElement,
     camera: Camera,
-    entityManager: EntityManager
+    entityManager: EntityManager,
+    movementSystem: MovementSystem
   ) {
-    this.mouseHandler = new MouseHandler(canvas, camera, entityManager)
+    this.mouseHandler = new MouseHandler(canvas, camera, entityManager, movementSystem)
   }
 
   /**

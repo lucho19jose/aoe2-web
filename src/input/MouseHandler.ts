@@ -1,5 +1,6 @@
 import { Camera } from '@/rendering/Camera'
 import { EntityManager } from '@/core/EntityManager'
+import { MovementSystem } from '@/game-logic/systems/MovementSystem'
 import { SelectionBox } from './SelectionBox'
 
 /**
@@ -10,6 +11,7 @@ export class MouseHandler {
   private canvas: HTMLCanvasElement
   private camera: Camera
   private entityManager: EntityManager
+  private movementSystem: MovementSystem
   private selectionBox: SelectionBox
 
   // Mouse state
@@ -24,14 +26,19 @@ export class MouseHandler {
   private worldX: number = 0
   private worldY: number = 0
 
+  // Move target marker
+  private moveTarget: { x: number; y: number; timestamp: number } | null = null
+
   constructor(
     canvas: HTMLCanvasElement,
     camera: Camera,
-    entityManager: EntityManager
+    entityManager: EntityManager,
+    movementSystem: MovementSystem
   ) {
     this.canvas = canvas
     this.camera = camera
     this.entityManager = entityManager
+    this.movementSystem = movementSystem
     this.selectionBox = new SelectionBox()
   }
 
@@ -116,14 +123,34 @@ export class MouseHandler {
       }
     }
 
-    // Right click - TODO: Issue move/attack commands
+    // Right click - Issue move commands
     if (event.button === 2) {
-      // TODO: Handle right-click commands
+      this.handleRightClick(worldPos.x, worldPos.y)
     }
 
     this.mouseDown = false
     this.isDragging = false
     this.mouseButton = -1
+  }
+
+  /**
+   * Handle right-click commands (move, attack, gather)
+   */
+  private handleRightClick(worldX: number, worldY: number): void {
+    // Get selected units
+    const selectedUnits = this.getSelectedUnits()
+
+    if (selectedUnits.length === 0) return
+
+    // Show move target marker
+    this.moveTarget = {
+      x: worldX,
+      y: worldY,
+      timestamp: Date.now()
+    }
+
+    // Issue move command to all selected units
+    this.movementSystem.setMoveTargetForGroup(selectedUnits, worldX, worldY)
   }
 
   /**
@@ -226,9 +253,37 @@ export class MouseHandler {
   }
 
   /**
+   * Get selected units
+   */
+  private getSelectedUnits(): number[] {
+    const entityIds = this.entityManager.getEntitiesWithComponents(['selectable'])
+    const selected: number[] = []
+
+    for (const id of entityIds) {
+      const selectable = this.entityManager.getComponent(id, 'selectable')
+      if (selectable?.selected) {
+        selected.push(id)
+      }
+    }
+
+    return selected
+  }
+
+  /**
    * Get current world position of mouse
    */
   getWorldPosition(): { x: number; y: number } {
     return { x: this.worldX, y: this.worldY }
+  }
+
+  /**
+   * Get move target for rendering
+   */
+  getMoveTarget(): { x: number; y: number; timestamp: number } | null {
+    // Clear move target after 1 second
+    if (this.moveTarget && Date.now() - this.moveTarget.timestamp > 1000) {
+      this.moveTarget = null
+    }
+    return this.moveTarget
   }
 }

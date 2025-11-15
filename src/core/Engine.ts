@@ -3,6 +3,7 @@ import { Camera } from '@/rendering/Camera'
 import { EntityManager } from './EntityManager'
 import { UnitFactory } from '@/game-logic/entities/Unit'
 import { InputManager } from '@/input/InputManager'
+import { MovementSystem } from '@/game-logic/systems/MovementSystem'
 
 /**
  * Main game engine
@@ -14,6 +15,7 @@ export class Engine {
   private camera: Camera
   private entityManager: EntityManager
   private inputManager: InputManager
+  private movementSystem: MovementSystem
   private running: boolean = false
   private lastTime: number = 0
   private animationFrameId: number = 0
@@ -27,7 +29,13 @@ export class Engine {
     this.canvas = canvas
     this.camera = new Camera(canvas)
     this.entityManager = new EntityManager()
-    this.inputManager = new InputManager(canvas, this.camera, this.entityManager)
+    this.movementSystem = new MovementSystem(this.entityManager)
+    this.inputManager = new InputManager(
+      canvas,
+      this.camera,
+      this.entityManager,
+      this.movementSystem
+    )
     this.renderer = new Renderer(canvas, this.camera, this.entityManager, this.inputManager)
 
     // Set canvas size
@@ -137,7 +145,10 @@ export class Engine {
     // Update input
     this.inputManager.update(deltaTime)
 
-    // TODO: Update other systems (entities, pathfinding, etc.)
+    // Update movement
+    this.movementSystem.update(deltaTime)
+
+    // TODO: Update other systems (pathfinding, combat, etc.)
   }
 
   /**
@@ -173,6 +184,13 @@ export class Engine {
    */
   getEntityManager(): EntityManager {
     return this.entityManager
+  }
+
+  /**
+   * Get movement system
+   */
+  getMovementSystem(): MovementSystem {
+    return this.movementSystem
   }
 
   /**
