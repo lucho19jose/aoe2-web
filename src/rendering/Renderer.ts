@@ -1,5 +1,6 @@
 import { Camera } from './Camera'
 import { EntityManager } from '@/core/EntityManager'
+import { InputManager } from '@/input/InputManager'
 
 /**
  * Main renderer for the game
@@ -10,16 +11,23 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D
   private camera: Camera
   private entityManager: EntityManager
+  private inputManager: InputManager
 
   // Grid settings
   private tileSize: number = 32
   private gridWidth: number = 100
   private gridHeight: number = 100
 
-  constructor(canvas: HTMLCanvasElement, camera: Camera, entityManager: EntityManager) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    camera: Camera,
+    entityManager: EntityManager,
+    inputManager: InputManager
+  ) {
     this.canvas = canvas
     this.camera = camera
     this.entityManager = entityManager
+    this.inputManager = inputManager
 
     const ctx = canvas.getContext('2d')
     if (!ctx) {
@@ -45,6 +53,7 @@ export class Renderer {
     // Render game world
     this.renderGrid()
     this.renderEntities()
+    this.renderSelectionBox()
 
     // Reset transform for UI elements
     this.ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -139,6 +148,28 @@ export class Renderer {
         this.ctx.fillStyle = '#00ff00'
         this.ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight)
       }
+    }
+  }
+
+  /**
+   * Render selection box
+   */
+  private renderSelectionBox(): void {
+    const selectionBox = this.inputManager.getMouseHandler().getSelectionBox()
+
+    if (selectionBox.active) {
+      const bounds = selectionBox.getBounds()
+      const width = bounds.right - bounds.left
+      const height = bounds.bottom - bounds.top
+
+      // Draw selection box background
+      this.ctx.fillStyle = 'rgba(0, 255, 0, 0.1)'
+      this.ctx.fillRect(bounds.left, bounds.top, width, height)
+
+      // Draw selection box border
+      this.ctx.strokeStyle = '#00ff00'
+      this.ctx.lineWidth = 2 / this.camera.zoom
+      this.ctx.strokeRect(bounds.left, bounds.top, width, height)
     }
   }
 

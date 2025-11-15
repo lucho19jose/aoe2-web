@@ -2,6 +2,7 @@ import { Renderer } from '@/rendering/Renderer'
 import { Camera } from '@/rendering/Camera'
 import { EntityManager } from './EntityManager'
 import { UnitFactory } from '@/game-logic/entities/Unit'
+import { InputManager } from '@/input/InputManager'
 
 /**
  * Main game engine
@@ -12,6 +13,7 @@ export class Engine {
   private renderer: Renderer
   private camera: Camera
   private entityManager: EntityManager
+  private inputManager: InputManager
   private running: boolean = false
   private lastTime: number = 0
   private animationFrameId: number = 0
@@ -25,7 +27,8 @@ export class Engine {
     this.canvas = canvas
     this.camera = new Camera(canvas)
     this.entityManager = new EntityManager()
-    this.renderer = new Renderer(canvas, this.camera, this.entityManager)
+    this.inputManager = new InputManager(canvas, this.camera, this.entityManager)
+    this.renderer = new Renderer(canvas, this.camera, this.entityManager, this.inputManager)
 
     // Set canvas size
     this.resizeCanvas()
@@ -131,6 +134,9 @@ export class Engine {
     // Update camera
     this.camera.update(deltaTime)
 
+    // Update input
+    this.inputManager.update(deltaTime)
+
     // TODO: Update other systems (entities, pathfinding, etc.)
   }
 
@@ -173,36 +179,20 @@ export class Engine {
    * Handle mouse down events
    */
   handleMouseDown(event: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
-
-    // Convert screen coords to world coords
-    const worldPos = this.camera.screenToWorld(x, y)
-
-    // TODO: Handle unit selection, etc.
-    console.log('Mouse down at world position:', worldPos)
+    this.inputManager.handleMouseDown(event)
   }
 
   /**
    * Handle mouse move events
    */
   handleMouseMove(event: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
-
-    // TODO: Handle selection box, etc.
+    this.inputManager.handleMouseMove(event)
   }
 
   /**
    * Handle mouse up events
    */
   handleMouseUp(event: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
-
-    // TODO: Handle command issuing, etc.
+    this.inputManager.handleMouseUp(event)
   }
 }
