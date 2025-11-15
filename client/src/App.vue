@@ -1,12 +1,25 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { Engine } from './core/Engine'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+let engine: Engine | null = null
 
 onMounted(() => {
   if (canvasRef.value) {
-    // Canvas initialization will be handled by the game engine
-    console.log('Canvas ready:', canvasRef.value)
+    console.log('🎨 Canvas ready, initializing game engine...')
+
+    // Initialize and start the game engine
+    engine = new Engine(canvasRef.value)
+    engine.start()
+  }
+})
+
+onUnmounted(() => {
+  // Clean up the engine when component is destroyed
+  if (engine) {
+    engine.destroy()
+    engine = null
   }
 })
 </script>
