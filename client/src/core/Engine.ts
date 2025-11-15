@@ -1,5 +1,7 @@
 import { Camera } from '../rendering/Camera'
 import { Renderer } from '../rendering/Renderer'
+import { EntityManager } from './EntityManager'
+import { UnitFactory } from '../game-logic/entities/Unit'
 
 /**
  * Main game engine - manages the game loop and coordinates all systems
@@ -8,6 +10,7 @@ export class Engine {
   private canvas: HTMLCanvasElement
   private camera: Camera
   private renderer: Renderer
+  private entityManager: EntityManager
 
   private lastFrameTime: number = 0
   private fps: number = 60
@@ -17,10 +20,30 @@ export class Engine {
   private isRunning: boolean = false
   private animationFrameId: number | null = null
 
+  // Grid settings (should match Renderer)
+  private readonly gridSize = 100
+  private readonly tileSize = 32
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
     this.camera = new Camera()
-    this.renderer = new Renderer(canvas, this.camera)
+    this.entityManager = new EntityManager()
+    this.renderer = new Renderer(canvas, this.camera, this.entityManager)
+
+    // Create test units
+    this.initializeTestUnits()
+  }
+
+  /**
+   * Initialize 50 test units
+   */
+  private initializeTestUnits(): void {
+    UnitFactory.createRandomUnits(
+      this.entityManager,
+      50,
+      this.gridSize,
+      this.tileSize
+    )
   }
 
   /**
@@ -121,5 +144,12 @@ export class Engine {
    */
   public getRenderer(): Renderer {
     return this.renderer
+  }
+
+  /**
+   * Get the entity manager instance (for external access)
+   */
+  public getEntityManager(): EntityManager {
+    return this.entityManager
   }
 }
