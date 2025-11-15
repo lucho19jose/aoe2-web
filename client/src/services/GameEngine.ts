@@ -5,6 +5,7 @@ import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Entity } from '@/entities/Entity'
 import { GAME_CONFIG } from '@/config/gameConfig'
+import { NavigationGrid } from '@/pathfinding/NavigationGrid'
 import type { UnitType, BuildingType } from '@/types/game'
 
 export class GameEngine {
@@ -24,6 +25,9 @@ export class GameEngine {
   private units: Map<string, Unit> = new Map()
   private buildings: Map<string, Building> = new Map()
   private selectedEntities: Set<Entity> = new Set()
+
+  // Pathfinding
+  private navigationGrid: NavigationGrid
 
   // Raycaster for mouse picking
   private raycaster: THREE.Raycaster
@@ -69,6 +73,9 @@ export class GameEngine {
 
     // Setup raycaster
     this.raycaster = new THREE.Raycaster()
+
+    // Setup navigation grid (100x100 map)
+    this.navigationGrid = new NavigationGrid(100, 1)
 
     // Setup input handler
     this.inputHandler = new InputHandler(this.canvas)
@@ -146,10 +153,22 @@ export class GameEngine {
       if (intersects.length > 0) {
         const point = intersects[0].point
 
-        // Move selected units
+        // Move selected units using pathfinding
         this.selectedEntities.forEach(entity => {
           if (entity instanceof Unit) {
-            entity.moveTo({ x: point.x, y: point.y, z: point.z })
+            // Find path from unit's current position to target
+            const startPos = { x: entity.position.x, y: 0, z: entity.position.z }
+            const goalPos = { x: point.x, y: 0, z: point.z }
+
+            const path = this.navigationGrid.findPath(startPos, goalPos)
+
+            if (path.length > 0) {
+              // Use pathfinding
+              entity.moveTo(goalPos, path)
+            } else {
+              // No path found, try direct movement
+              entity.moveTo(goalPos)
+            }
           }
         })
       }
@@ -253,9 +272,45 @@ export class GameEngine {
     // Add a test building
     this.createBuilding('building1', 'house' as BuildingType, { x: 10, y: 0, z: 0 }, 'player1', '#FF0000')
 
+    // Add obstacles for pathfinding testing
+    this.addTestObstacles()
+
     // Add grid helper
     const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x222222)
     this.scene.add(gridHelper)
+  }
+
+  private addTestObstacles() {
+    // Create visual obstacles and add them to navigation grid
+    const obstacleData = [
+      { x: 5, z: 0, width: 2, height: 8 },   // Vertical wall
+      { x: -5, z: -5, width: 6, height: 2 }, // Horizontal wall
+      { x: 15, z: 5, width: 3, height: 3 },  // Square obstacle
+    ]
+
+    const obstacleMaterial = new THREE.MeshStandardMaterial({
+      color: 0x666666,
+      roughness: 0.9,
+      metalness: 0.1
+    })
+
+    obstacleData.forEach((obs, index) => {
+      // Create visual obstacle
+      const geometry = new THREE.BoxGeometry(obs.width, 2, obs.height)
+      const mesh = new THREE.Mesh(geometry, obstacleMaterial)
+      mesh.position.set(obs.x + obs.width / 2, 1, obs.z + obs.height / 2)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      mesh.name = `obstacle_${index}`
+      this.scene.add(mesh)
+
+      // Add to navigation grid
+      this.navigationGrid.addRectObstacle(
+        { x: obs.x, y: 0, z: obs.z },
+        obs.width,
+        obs.height
+      )
+    })
   }
 
   public createUnit(id: string, type: UnitType, position: {x: number, y: number, z: number}, ownerId: string, color: string) {
