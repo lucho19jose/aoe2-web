@@ -1,9 +1,48 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Engine } from './core/Engine'
+import { Unit } from './game-logic/entities/Unit'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let engine: Engine | null = null
+
+/**
+ * Create test units scattered randomly on the map
+ */
+function createTestUnits(engine: Engine): void {
+  const entityManager = engine.getEntityManager()
+  const TILE_SIZE = 32
+  const GRID_WIDTH = 100
+  const GRID_HEIGHT = 100
+
+  console.log('Creating 50 test units...')
+
+  // Create 50 units with different types at random positions
+  for (let i = 0; i < 50; i++) {
+    // Random position within the grid
+    const x = (Math.random() - 0.5) * GRID_WIDTH * TILE_SIZE
+    const y = (Math.random() - 0.5) * GRID_HEIGHT * TILE_SIZE
+
+    // Create different unit types for variety
+    const unitType = i % 4
+    switch (unitType) {
+      case 0:
+        Unit.createMilitia(entityManager, x, y)
+        break
+      case 1:
+        Unit.createVillager(entityManager, x, y)
+        break
+      case 2:
+        Unit.createArcher(entityManager, x, y)
+        break
+      case 3:
+        Unit.createKnight(entityManager, x, y)
+        break
+    }
+  }
+
+  console.log(`✅ Created ${entityManager.getEntityCount()} units`)
+}
 
 onMounted(() => {
   if (canvasRef.value) {
@@ -11,6 +50,11 @@ onMounted(() => {
 
     // Initialize and start the game engine
     engine = new Engine(canvasRef.value)
+
+    // Create test units
+    createTestUnits(engine)
+
+    // Start the game loop
     engine.start()
   }
 })

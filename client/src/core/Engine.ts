@@ -1,4 +1,5 @@
 import { Renderer } from '../rendering/Renderer'
+import { EntityManager } from './EntityManager'
 
 /**
  * Main game engine
@@ -6,6 +7,7 @@ import { Renderer } from '../rendering/Renderer'
  */
 export class Engine {
   private renderer: Renderer
+  private entityManager: EntityManager
   private running: boolean = false
   private lastFrameTime: number = 0
   private animationFrameId: number | null = null
@@ -15,7 +17,8 @@ export class Engine {
   private readonly FRAME_DURATION = 1000 / this.TARGET_FPS
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new Renderer(canvas)
+    this.entityManager = new EntityManager()
+    this.renderer = new Renderer(canvas, this.entityManager)
   }
 
   /**
@@ -89,10 +92,18 @@ export class Engine {
   }
 
   /**
+   * Get the entity manager instance
+   */
+  public getEntityManager(): EntityManager {
+    return this.entityManager
+  }
+
+  /**
    * Clean up resources
    */
   public destroy(): void {
     this.stop()
     this.renderer.destroy()
+    this.entityManager.clear()
   }
 }
