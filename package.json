@@ -1,0 +1,27 @@
+{
+  "name": "aoe2-web",
+  "version": "0.1.0",
+  "description": "Age of Empires II Web Edition - Browser-based RTS game",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@quasar/extras": "^1.17.0",
+    "pinia": "^2.1.7",
+    "quasar": "^2.14.5",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@quasar/vite-plugin": "^1.6.0",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "sass": "^1.32.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.5",
+    "vue-tsc": "^1.8.27"
+  }
+}
