@@ -14,6 +14,17 @@ export interface ProductionQueueItem {
 }
 
 /**
+ * Research queue item
+ */
+export interface ResearchQueueItem {
+  techId: string
+  techName: string
+  progress: number      // 0 to 1
+  totalTime: number     // seconds to complete
+  remainingTime: number // seconds remaining
+}
+
+/**
  * Represents a game building
  */
 export class Building extends Entity {
@@ -30,9 +41,15 @@ export class Building extends Entity {
   public canProduce: UnitType[] = []
   public maxQueueSize = 10
 
+  // Research system
+  public researchQueue: ResearchQueueItem[] = []
+  public canResearch: string[] = []
+  public maxResearchQueueSize = 1 // Usually buildings can only research one tech at a time
+
   private selectionBox: THREE.LineSegments | null = null
   private healthBar: THREE.Mesh | null = null
   private productionBar: THREE.Mesh | null = null
+  private researchBar: THREE.Mesh | null = null
 
   constructor(
     id: string,
@@ -245,6 +262,95 @@ export class Building extends Entity {
   }
 
   /**
+   * Add a technology to the research queue
+   */
+  public researchTechnology(techId: string, techName: string, researchTime: number): boolean {
+    // Check if building is complete
+    if (!this.isComplete) {
+      console.warn('Cannot research in incomplete building')
+      return false
+    }
+
+    // Check queue size
+    if (this.researchQueue.length >= this.maxResearchQueueSize) {
+      console.warn('Research queue is full')
+      return false
+    }
+
+    // Add to queue
+    const queueItem: ResearchQueueItem = {
+      techId,
+      techName,
+      progress: 0,
+      totalTime: researchTime,
+      remainingTime: researchTime
+    }
+
+    this.researchQueue.push(queueItem)
+    console.log(`🔬 ${this.name} started researching ${techName}`)
+
+    return true
+  }
+
+  /**
+   * Cancel research
+   */
+  public cancelResearch(index: number = 0): ResearchQueueItem | null {
+    if (index < 0 || index >= this.researchQueue.length) {
+      return null
+    }
+
+    const cancelled = this.researchQueue.splice(index, 1)[0]
+    console.log(`❌ Cancelled research of ${cancelled.techName}`)
+
+    return cancelled
+  }
+
+  /**
+   * Get completed research
+   */
+  public getCompletedResearch(): string | null {
+    if (this.researchQueue.length === 0) return null
+
+    const currentResearch = this.researchQueue[0]
+    if (currentResearch.remainingTime <= 0) {
+      const completed = this.researchQueue.shift()!
+      return completed.techId
+    }
+
+    return null
+  }
+
+  /**
+   * Update research queue
+   */
+  private updateResearch(deltaTime: number) {
+    if (this.researchQueue.length === 0) {
+      // Hide research bar
+      if (this.researchBar) {
+        this.researchBar.visible = false
+      }
+      return
+    }
+
+    // Process first item in queue
+    const currentResearch = this.researchQueue[0]
+    currentResearch.remainingTime -= deltaTime
+    currentResearch.progress = 1 - (currentResearch.remainingTime / currentResearch.totalTime)
+
+    // Update research bar (if we have one)
+    if (this.researchBar) {
+      this.researchBar.visible = true
+      this.researchBar.scale.x = currentResearch.progress
+    }
+
+    // Check if completed
+    if (currentResearch.remainingTime <= 0) {
+      console.log(`✅ ${this.name} completed research ${currentResearch.techName}`)
+    }
+  }
+
+  /**
    * Update production queue
    */
   private updateProduction(deltaTime: number) {
@@ -308,6 +414,9 @@ export class Building extends Entity {
     // Update production queue
     this.updateProduction(deltaTime)
 
+    // Update research queue
+    this.updateResearch(deltaTime)
+
     // Make health bar and production bar always face camera (billboard effect)
     if (this.healthBar && this.mesh) {
       this.healthBar.lookAt(this.healthBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
@@ -315,6 +424,10 @@ export class Building extends Entity {
 
     if (this.productionBar && this.mesh && this.productionBar.visible) {
       this.productionBar.lookAt(this.productionBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
+    }
+
+    if (this.researchBar && this.mesh && this.researchBar.visible) {
+      this.researchBar.lookAt(this.researchBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
     }
   }
 

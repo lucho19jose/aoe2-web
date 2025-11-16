@@ -10,6 +10,11 @@ import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import { Formation, FormationType } from '@/utils/Formation'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 import init, { AIManager, AIDifficulty } from '@/wasm/game_engine'
+import { WebSocketService } from './WebSocketService'
+import type { WebSocketMessage } from './WebSocketService'
+import { getSoundService, SoundType } from './SoundService'
+import { TECHNOLOGIES } from '@/config/technologies'
+import type { Technology } from '@/config/technologies'
 
 export class GameEngine {
   private canvas: HTMLCanvasElement
@@ -58,7 +63,18 @@ export class GameEngine {
   // Formation
   private currentFormation: FormationType = FormationType.Box
 
-  constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
+  // WebSocket for multiplayer
+  private webSocket: WebSocketService | null = null
+  private isMultiplayer: boolean = false
+  private gameId: string | null = null
+
+  // Sound service
+  private soundService = getSoundService()
+
+  // Research system
+  private researchedTechnologies: Set<string> = new Set()
+
+  constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement, gameId?: string) {
     this.canvas = canvas
     this.minimapCanvas = minimapCanvas
 
@@ -110,6 +126,13 @@ export class GameEngine {
     // Initialize WASM and AI
     this.initWasmAndAI()
 
+    // Initialize multiplayer if gameId provided
+    if (gameId) {
+      this.gameId = gameId
+      this.isMultiplayer = true
+      this.initMultiplayer()
+    }
+
     // Handle window resize
     window.addEventListener('resize', this.onWindowResize.bind(this))
   }
@@ -142,6 +165,154 @@ export class GameEngine {
 
     this.aiManager.add_ai_player(playerId, difficulty)
     console.log(`🤖 Added AI player ${playerId} with difficulty ${difficulty}`)
+  }
+
+  /**
+   * Initialize multiplayer WebSocket connection
+   */
+  private async initMultiplayer() {
+    if (!this.gameId) return
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsHost = import.meta.env.VITE_WS_HOST || window.location.host
+    const wsUrl = `${wsProtocol}//${wsHost}/ws/game/${this.gameId}/`
+
+    this.webSocket = new WebSocketService(wsUrl)
+
+    try {
+      await this.webSocket.connect()
+      console.log('✅ Multiplayer WebSocket connected')
+
+      // Setup event handlers
+      this.setupMultiplayerHandlers()
+    } catch (error) {
+      console.error('❌ Failed to connect to multiplayer server:', error)
+      this.isMultiplayer = false
+    }
+  }
+
+  /**
+   * Setup WebSocket event handlers for multiplayer
+   */
+  private setupMultiplayerHandlers() {
+    if (!this.webSocket) return
+
+    // Handle unit movement from other players
+    this.webSocket.on('unit_move', (message: WebSocketMessage) => {
+      const { unitId, position, path } = message.data
+      const unit = this.units.get(unitId)
+      if (unit && unit.ownerId !== this.playerId) {
+        unit.moveTo(position, path || [])
+      }
+    })
+
+    // Handle unit training
+    this.webSocket.on('unit_train', (message: WebSocketMessage) => {
+      const { buildingId, unitType } = message.data
+      const building = this.buildings.get(buildingId)
+      if (building && building.ownerId !== this.playerId) {
+        building.trainUnit(unitType as UnitType)
+      }
+    })
+
+    // Handle unit attacks
+    this.webSocket.on('unit_attack', (message: WebSocketMessage) => {
+      const { unitId, targetId } = message.data
+      const unit = this.units.get(unitId)
+      const target = this.units.get(targetId) || this.buildings.get(targetId)
+      if (unit && target && unit.ownerId !== this.playerId) {
+        unit.attackTarget(target)
+      }
+    })
+
+    // Handle building construction
+    this.webSocket.on('building_build', (message: WebSocketMessage) => {
+      const { buildingId, buildingType, position, ownerId, color } = message.data
+      if (ownerId !== this.playerId) {
+        this.createBuilding(buildingId, buildingType as BuildingType, position, ownerId, color)
+      }
+    })
+
+    // Handle formation changes
+    this.webSocket.on('formation_change', (message: WebSocketMessage) => {
+      const { formation, playerId } = message.data
+      if (playerId !== this.playerId) {
+        console.log(`🌐 Player ${playerId} changed formation to ${formation}`)
+      }
+    })
+
+    // Handle game state sync
+    this.webSocket.on('game_state_sync', (message: WebSocketMessage) => {
+      console.log('🌐 Received game state sync:', message.data)
+      // TODO: Sync game state with server
+    })
+
+    console.log('✅ Multiplayer handlers setup complete')
+  }
+
+  /**
+   * Send unit move command to multiplayer server
+   */
+  private sendMultiplayerUnitMove(unitId: string, position: any, path: any[]) {
+    if (!this.isMultiplayer || !this.webSocket) return
+
+    this.webSocket.send({
+      type: 'unit_move',
+      data: {
+        unitId,
+        position,
+        path,
+        timestamp: Date.now()
+      }
+    })
+  }
+
+  /**
+   * Send unit train command to multiplayer server
+   */
+  private sendMultiplayerUnitTrain(buildingId: string, unitType: UnitType) {
+    if (!this.isMultiplayer || !this.webSocket) return
+
+    this.webSocket.send({
+      type: 'unit_train',
+      data: {
+        buildingId,
+        unitType,
+        timestamp: Date.now()
+      }
+    })
+  }
+
+  /**
+   * Send unit attack command to multiplayer server
+   */
+  private sendMultiplayerUnitAttack(unitId: string, targetId: string) {
+    if (!this.isMultiplayer || !this.webSocket) return
+
+    this.webSocket.send({
+      type: 'unit_attack',
+      data: {
+        unitId,
+        targetId,
+        timestamp: Date.now()
+      }
+    })
+  }
+
+  /**
+   * Send formation change to multiplayer server
+   */
+  private sendMultiplayerFormationChange(formation: FormationType) {
+    if (!this.isMultiplayer || !this.webSocket) return
+
+    this.webSocket.send({
+      type: 'formation_change',
+      data: {
+        formation,
+        playerId: this.playerId,
+        timestamp: Date.now()
+      }
+    })
   }
 
   private setupInputHandlers() {
@@ -189,6 +360,9 @@ export class GameEngine {
       if (entity) {
         entity.setSelected(true)
         this.selectedEntities.add(entity)
+
+        // Play selection sound
+        this.soundService.play(SoundType.SELECT)
       }
     } else {
       // Clicked on empty space - deselect all
@@ -591,6 +765,9 @@ export class GameEngine {
 
     console.log(`🎖️ Spawned ${unitType} from ${building.name} at position (${spawnPosition.x.toFixed(1)}, ${spawnPosition.z.toFixed(1)})`)
 
+    // Play unit trained sound
+    this.soundService.play(SoundType.UNIT_TRAINED)
+
     return unit
   }
 
@@ -635,9 +812,125 @@ export class GameEngine {
       if (this.onResourcesUpdate) {
         this.onResourcesUpdate(this.playerResources)
       }
+
+      // Send to multiplayer server
+      this.sendMultiplayerUnitTrain(buildingId, unitType)
     }
 
     return success
+  }
+
+  /**
+   * Research a technology in a building
+   */
+  public researchTechnology(buildingId: string, techId: string): boolean {
+    const building = this.buildings.get(buildingId)
+    if (!building) {
+      console.error(`Building ${buildingId} not found`)
+      return false
+    }
+
+    // Check if already researched
+    if (this.researchedTechnologies.has(techId)) {
+      console.warn(`Technology ${techId} already researched`)
+      return false
+    }
+
+    // Get technology config
+    const tech = TECHNOLOGIES[techId.toUpperCase()]
+    if (!tech) {
+      console.error(`Technology ${techId} not found`)
+      return false
+    }
+
+    // Check if player has enough resources
+    const cost = tech.cost
+    for (const [resource, amount] of Object.entries(cost)) {
+      if (!amount) continue
+      const resourceKey = resource as keyof Resources
+      if (this.playerResources[resourceKey] < amount) {
+        console.warn(`Not enough ${resource}: need ${amount}, have ${this.playerResources[resourceKey]}`)
+        return false
+      }
+    }
+
+    // Check prerequisites
+    if (tech.requires) {
+      for (const reqTechId of tech.requires) {
+        if (!this.researchedTechnologies.has(reqTechId)) {
+          console.warn(`Missing prerequisite technology: ${reqTechId}`)
+          return false
+        }
+      }
+    }
+
+    // Attempt to research
+    const success = building.researchTechnology(techId, tech.name, tech.researchTime)
+
+    if (success) {
+      // Deduct resources
+      for (const [resource, amount] of Object.entries(cost)) {
+        if (!amount) continue
+        const resourceKey = resource as keyof Resources
+        this.playerResources[resourceKey] -= amount
+      }
+
+      // Notify resource update
+      if (this.onResourcesUpdate) {
+        this.onResourcesUpdate(this.playerResources)
+      }
+
+      // Send to multiplayer server
+      this.sendMultiplayerResearch(buildingId, techId)
+    }
+
+    return success
+  }
+
+  /**
+   * Apply technology effects
+   */
+  private applyTechnologyEffects(techId: string) {
+    const tech = TECHNOLOGIES[techId.toUpperCase()]
+    if (!tech) return
+
+    console.log(`🔬 Applying effects for ${tech.name}`)
+
+    // Apply effects based on technology
+    for (const effect of tech.effects) {
+      switch (effect.type) {
+        case 'unit_stat':
+          // In a real implementation, you would update unit stats
+          // For now, just log it
+          console.log(`  • ${effect.target} ${effect.stat} +${effect.value}`)
+          break
+        case 'resource_rate':
+          console.log(`  • ${effect.stat} rate ${effect.value}x`)
+          break
+        case 'unlock':
+          console.log(`  • Unlocked: ${effect.value}`)
+          break
+      }
+    }
+
+    // Play research complete sound
+    this.soundService.play(SoundType.RESEARCH_COMPLETE)
+  }
+
+  /**
+   * Send research command to multiplayer server
+   */
+  private sendMultiplayerResearch(buildingId: string, techId: string) {
+    if (!this.isMultiplayer || !this.webSocket) return
+
+    this.webSocket.send({
+      type: 'research_tech',
+      data: {
+        buildingId,
+        techId,
+        timestamp: Date.now()
+      }
+    })
   }
 
   /**
@@ -703,13 +996,16 @@ export class GameEngine {
     deadUnits.forEach(unitId => {
       const unit = this.units.get(unitId)
       if (unit) {
+        // Play death sound
+        this.soundService.play(SoundType.UNIT_DIE)
+
         unit.dispose()
         this.units.delete(unitId)
         console.log(`💀 Removed dead unit ${unitId}`)
       }
     })
 
-    // Update buildings and check for completed units
+    // Update buildings and check for completed units and research
     this.buildings.forEach(building => {
       building.update(deltaTime)
 
@@ -718,6 +1014,14 @@ export class GameEngine {
       if (completedUnit) {
         // Spawn the unit near the building
         this.spawnUnitFromBuilding(building, completedUnit)
+      }
+
+      // Check if research was completed
+      const completedTech = building.getCompletedResearch()
+      if (completedTech) {
+        this.researchedTechnologies.add(completedTech)
+        this.applyTechnologyEffects(completedTech)
+        console.log(`✅ Technology ${completedTech} researched!`)
       }
     })
 
@@ -1034,6 +1338,9 @@ export class GameEngine {
   public setFormation(formation: FormationType) {
     this.currentFormation = formation
     console.log(`📐 Formation changed to ${formation}`)
+
+    // Send to multiplayer server
+    this.sendMultiplayerFormationChange(formation)
   }
 
   /**
@@ -1041,6 +1348,13 @@ export class GameEngine {
    */
   public getFormation(): FormationType {
     return this.currentFormation
+  }
+
+  /**
+   * Get researched technologies
+   */
+  public getResearchedTechnologies(): Set<string> {
+    return new Set(this.researchedTechnologies)
   }
 
   public start() {
@@ -1059,6 +1373,12 @@ export class GameEngine {
 
   public dispose() {
     this.stop()
+
+    // Disconnect WebSocket
+    if (this.webSocket) {
+      this.webSocket.disconnect()
+      this.webSocket = null
+    }
 
     // Dispose all entities
     this.units.forEach(unit => unit.dispose())
