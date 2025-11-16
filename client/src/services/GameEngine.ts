@@ -5,8 +5,9 @@ import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
-import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
+import { GAME_CONFIG, RESOURCE_SPAWN, UNIT_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
+import { Formation, FormationType } from '@/utils/Formation'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 import init, { AIManager, AIDifficulty } from '@/wasm/game_engine'
 
@@ -53,6 +54,9 @@ export class GameEngine {
 
   // Selection box visual
   private selectionBox: THREE.Line | null = null
+
+  // Formation
+  private currentFormation: FormationType = FormationType.Box
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -199,6 +203,39 @@ export class GameEngine {
 
     this.raycaster.setFromCamera(mousePos, this.camera)
 
+    // Check if clicked on an enemy unit or building (attack command)
+    const allObjects = [
+      ...Array.from(this.units.values()).map(u => u.mesh).filter(Boolean) as THREE.Object3D[],
+      ...Array.from(this.buildings.values()).map(b => b.mesh).filter(Boolean) as THREE.Object3D[]
+    ]
+
+    const entityIntersects = this.raycaster.intersectObjects(allObjects, true)
+
+    if (entityIntersects.length > 0) {
+      const clicked = entityIntersects[0].object
+      const entityId = clicked.userData.entityId
+      const targetUnit = this.units.get(entityId)
+      const targetBuilding = this.buildings.get(entityId)
+
+      // Check if target is an enemy
+      const isEnemy = (targetUnit && targetUnit.ownerId !== this.playerId) ||
+                      (targetBuilding && targetBuilding.ownerId !== this.playerId)
+
+      if (isEnemy) {
+        // Attack command
+        this.selectedEntities.forEach(entity => {
+          if (entity instanceof Unit) {
+            entity.stopHarvesting()
+            const target = targetUnit || targetBuilding
+            if (target) {
+              entity.attackTarget(target)
+            }
+          }
+        })
+        return
+      }
+    }
+
     // Check if clicked on a resource
     const resourceObjects = Array.from(this.resources.values())
       .map(r => r.mesh)
@@ -229,33 +266,78 @@ export class GameEngine {
       return
     }
 
-    // Check if clicked on terrain
+    // Check if clicked on terrain - move command
     if (this.terrain) {
       const intersects = this.raycaster.intersectObject(this.terrain)
       if (intersects.length > 0) {
         const point = intersects[0].point
 
-        // Move selected units using pathfinding
-        this.selectedEntities.forEach(entity => {
-          if (entity instanceof Unit) {
-            // Stop harvesting if currently harvesting
-            entity.stopHarvesting()
+        // Get selected units
+        const selectedUnits = Array.from(this.selectedEntities).filter(e => e instanceof Unit) as Unit[]
 
-            // Find path from unit's current position to target
-            const startPos = { x: entity.position.x, y: 0, z: entity.position.z }
-            const goalPos = { x: point.x, y: 0, z: point.z }
+        if (selectedUnits.length === 0) return
 
-            const path = this.navigationGrid.findPath(startPos, goalPos)
+        if (selectedUnits.length === 1) {
+          // Single unit - direct movement
+          const unit = selectedUnits[0]
+          unit.stopHarvesting()
+
+          const startPos = { x: unit.position.x, y: 0, z: unit.position.z }
+          const goalPos = { x: point.x, y: 0, z: point.z }
+
+          const path = this.navigationGrid.findPath(startPos, goalPos)
+
+          if (path.length > 0) {
+            unit.moveTo(goalPos, path)
+          } else {
+            unit.moveTo(goalPos)
+          }
+        } else {
+          // Multiple units - use formation
+          const spacing = Formation.getDefaultSpacing(this.currentFormation)
+          const centerPos = { x: point.x, y: 0, z: point.z }
+
+          // Calculate facing direction (average from units to target)
+          const avgUnitPos = selectedUnits.reduce((acc, unit) => ({
+            x: acc.x + unit.position.x,
+            z: acc.z + unit.position.z
+          }), { x: 0, z: 0 })
+
+          avgUnitPos.x /= selectedUnits.length
+          avgUnitPos.z /= selectedUnits.length
+
+          const facing = Formation.calculateFacing(
+            { x: avgUnitPos.x, y: 0, z: avgUnitPos.z },
+            centerPos
+          )
+
+          // Get formation positions
+          const formationPositions = Formation.calculatePositions(
+            centerPos,
+            this.currentFormation,
+            selectedUnits.length,
+            spacing,
+            facing
+          )
+
+          // Assign each unit to a formation position
+          selectedUnits.forEach((unit, index) => {
+            unit.stopHarvesting()
+
+            const targetPos = formationPositions[index]
+            const startPos = { x: unit.position.x, y: 0, z: unit.position.z }
+
+            const path = this.navigationGrid.findPath(startPos, targetPos)
 
             if (path.length > 0) {
-              // Use pathfinding
-              entity.moveTo(goalPos, path)
+              unit.moveTo(targetPos, path)
             } else {
-              // No path found, try direct movement
-              entity.moveTo(goalPos)
+              unit.moveTo(targetPos)
             }
-          }
-        })
+          })
+
+          console.log(`📐 Moving ${selectedUnits.length} units in ${this.currentFormation} formation`)
+        }
       }
     }
   }
@@ -485,6 +567,90 @@ export class GameEngine {
     return building
   }
 
+  /**
+   * Spawn a unit from a building's production
+   */
+  private spawnUnitFromBuilding(building: Building, unitType: UnitType) {
+    // Generate unique unit ID
+    const unitId = `unit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    // Calculate spawn position (near building)
+    const spawnOffset = building.size.width + 1
+    const angle = Math.random() * Math.PI * 2
+    const spawnPosition = {
+      x: building.position.x + Math.cos(angle) * spawnOffset,
+      y: 0,
+      z: building.position.z + Math.sin(angle) * spawnOffset
+    }
+
+    // Get building owner color
+    const ownerColor = this.getPlayerColor(building.ownerId)
+
+    // Create the unit
+    const unit = this.createUnit(unitId, unitType, spawnPosition, building.ownerId, ownerColor)
+
+    console.log(`🎖️ Spawned ${unitType} from ${building.name} at position (${spawnPosition.x.toFixed(1)}, ${spawnPosition.z.toFixed(1)})`)
+
+    return unit
+  }
+
+  /**
+   * Train a unit in a building
+   */
+  public trainUnit(buildingId: string, unitType: UnitType): boolean {
+    const building = this.buildings.get(buildingId)
+    if (!building) {
+      console.error(`Building ${buildingId} not found`)
+      return false
+    }
+
+    // Check and deduct resources
+    const unitConfig = UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]
+    if (!unitConfig || !unitConfig.cost) {
+      console.error(`Unit ${unitType} has no cost configuration`)
+      return false
+    }
+
+    // Check if player has enough resources
+    const cost = unitConfig.cost
+    for (const [resource, amount] of Object.entries(cost)) {
+      const resourceKey = resource as keyof Resources
+      if (this.playerResources[resourceKey] < amount) {
+        console.warn(`Not enough ${resource}: need ${amount}, have ${this.playerResources[resourceKey]}`)
+        return false
+      }
+    }
+
+    // Attempt to train
+    const success = building.trainUnit(unitType)
+
+    if (success) {
+      // Deduct resources
+      for (const [resource, amount] of Object.entries(cost)) {
+        const resourceKey = resource as keyof Resources
+        this.playerResources[resourceKey] -= amount
+      }
+
+      // Notify resource update
+      if (this.onResourcesUpdate) {
+        this.onResourcesUpdate(this.playerResources)
+      }
+    }
+
+    return success
+  }
+
+  /**
+   * Get player color by player ID
+   */
+  private getPlayerColor(playerId: string): string {
+    // Simple color mapping - can be improved
+    if (playerId === this.playerId) {
+      return '#0000FF' // Blue for player
+    }
+    return '#FF0000' // Red for AI/enemies
+  }
+
   private onWindowResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
@@ -507,6 +673,9 @@ export class GameEngine {
 
     // Update all entities
     const deadUnits: string[] = []
+    const allUnits = Array.from(this.units.values())
+    const allBuildings = Array.from(this.buildings.values())
+
     this.units.forEach(unit => {
       unit.update(deltaTime)
 
@@ -517,6 +686,12 @@ export class GameEngine {
           this.addPlayerResources(deposited.type, deposited.amount)
         }
       }
+
+      // Auto-attack nearby enemies (aggressive stance)
+      unit.findAndAttackNearbyEnemy(allUnits, allBuildings)
+
+      // Handle defensive stance (counter-attack)
+      unit.handleDefensiveStance()
 
       // Mark dead units for removal
       if (unit.hp <= 0) {
@@ -534,8 +709,18 @@ export class GameEngine {
       }
     })
 
-    // Update buildings and resources
-    this.buildings.forEach(building => building.update(deltaTime))
+    // Update buildings and check for completed units
+    this.buildings.forEach(building => {
+      building.update(deltaTime)
+
+      // Check if a unit was completed
+      const completedUnit = building.getCompletedUnit()
+      if (completedUnit) {
+        // Spawn the unit near the building
+        this.spawnUnitFromBuilding(building, completedUnit)
+      }
+    })
+
     this.resources.forEach(resource => resource.update(deltaTime))
 
     // Update controls
@@ -841,6 +1026,21 @@ export class GameEngine {
 
   public getSelectedEntities(): Entity[] {
     return Array.from(this.selectedEntities)
+  }
+
+  /**
+   * Set formation type for moving multiple units
+   */
+  public setFormation(formation: FormationType) {
+    this.currentFormation = formation
+    console.log(`📐 Formation changed to ${formation}`)
+  }
+
+  /**
+   * Get current formation type
+   */
+  public getFormation(): FormationType {
+    return this.currentFormation
   }
 
   public start() {

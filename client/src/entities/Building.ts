@@ -1,7 +1,17 @@
 import * as THREE from 'three'
 import { Entity } from './Entity'
-import { BUILDING_TYPES, COLORS } from '@/config/gameConfig'
-import type { Position, BuildingType } from '@/types/game'
+import { BUILDING_TYPES, COLORS, UNIT_TYPES } from '@/config/gameConfig'
+import type { Position, BuildingType, UnitType } from '@/types/game'
+
+/**
+ * Production queue item
+ */
+export interface ProductionQueueItem {
+  unitType: UnitType
+  progress: number      // 0 to 1
+  totalTime: number     // seconds to complete
+  remainingTime: number // seconds remaining
+}
 
 /**
  * Represents a game building
@@ -14,8 +24,15 @@ export class Building extends Entity {
   public isComplete = false
   public buildProgress = 0
   public size: { width: number; height: number }
+
+  // Production system
+  public productionQueue: ProductionQueueItem[] = []
+  public canProduce: UnitType[] = []
+  public maxQueueSize = 10
+
   private selectionBox: THREE.LineSegments | null = null
   private healthBar: THREE.Mesh | null = null
+  private productionBar: THREE.Mesh | null = null
 
   constructor(
     id: string,
@@ -33,6 +50,11 @@ export class Building extends Entity {
     this.maxHp = buildingConfig.hp
     this.hp = this.maxHp
     this.size = buildingConfig.size
+
+    // Initialize production capabilities
+    if ('produces' in buildingConfig && Array.isArray(buildingConfig.produces)) {
+      this.canProduce = buildingConfig.produces as UnitType[]
+    }
 
     this.createMesh(playerColor)
   }
@@ -94,6 +116,16 @@ export class Building extends Entity {
     this.healthBar.position.set(0, height + 0.5, 0.01)
     this.mesh.add(this.healthBar)
 
+    // Create production progress bar (initially hidden)
+    const productionBarGeometry = new THREE.PlaneGeometry(width, 0.15)
+    const productionBarMaterial = new THREE.MeshBasicMaterial({
+      color: 0x4a90e2, // Blue for production
+    })
+    this.productionBar = new THREE.Mesh(productionBarGeometry, productionBarMaterial)
+    this.productionBar.position.set(0, height + 0.8, 0.01)
+    this.productionBar.visible = false
+    this.mesh.add(this.productionBar)
+
     // If not complete, make it transparent
     if (!this.isComplete) {
       material.transparent = true
@@ -122,6 +154,123 @@ export class Building extends Entity {
 
     if (this.buildProgress >= 1) {
       this.completeBuild()
+    }
+  }
+
+  /**
+   * Add a unit to the production queue
+   */
+  public trainUnit(unitType: UnitType): boolean {
+    // Check if building is complete
+    if (!this.isComplete) {
+      console.warn('Cannot train units in incomplete building')
+      return false
+    }
+
+    // Check if building can produce this unit
+    if (!this.canProduce.includes(unitType)) {
+      console.warn(`${this.name} cannot produce ${unitType}`)
+      return false
+    }
+
+    // Check queue size
+    if (this.productionQueue.length >= this.maxQueueSize) {
+      console.warn('Production queue is full')
+      return false
+    }
+
+    // Get unit configuration
+    const unitConfig = UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]
+    if (!unitConfig) {
+      console.error(`Unit type ${unitType} not found in config`)
+      return false
+    }
+
+    // Add to queue
+    const queueItem: ProductionQueueItem = {
+      unitType,
+      progress: 0,
+      totalTime: unitConfig.trainTime,
+      remainingTime: unitConfig.trainTime
+    }
+
+    this.productionQueue.push(queueItem)
+    console.log(`🏭 ${this.name} started training ${unitType} (${this.productionQueue.length} in queue)`)
+
+    return true
+  }
+
+  /**
+   * Cancel production of a unit in the queue
+   */
+  public cancelProduction(index: number = 0): ProductionQueueItem | null {
+    if (index < 0 || index >= this.productionQueue.length) {
+      return null
+    }
+
+    const cancelled = this.productionQueue.splice(index, 1)[0]
+    console.log(`❌ Cancelled production of ${cancelled.unitType}`)
+
+    return cancelled
+  }
+
+  /**
+   * Get the current production progress (0-1)
+   */
+  public getCurrentProductionProgress(): number {
+    if (this.productionQueue.length === 0) return 0
+    return this.productionQueue[0].progress
+  }
+
+  /**
+   * Check if currently producing
+   */
+  public isProducing(): boolean {
+    return this.productionQueue.length > 0
+  }
+
+  /**
+   * Get completed units (to be spawned by GameEngine)
+   */
+  public getCompletedUnit(): UnitType | null {
+    if (this.productionQueue.length === 0) return null
+
+    const currentProduction = this.productionQueue[0]
+    if (currentProduction.remainingTime <= 0) {
+      const completed = this.productionQueue.shift()!
+      return completed.unitType
+    }
+
+    return null
+  }
+
+  /**
+   * Update production queue
+   */
+  private updateProduction(deltaTime: number) {
+    if (this.productionQueue.length === 0) {
+      // Hide production bar
+      if (this.productionBar) {
+        this.productionBar.visible = false
+      }
+      return
+    }
+
+    // Process first item in queue
+    const currentProduction = this.productionQueue[0]
+    currentProduction.remainingTime -= deltaTime
+    currentProduction.progress = 1 - (currentProduction.remainingTime / currentProduction.totalTime)
+
+    // Update production bar
+    if (this.productionBar) {
+      this.productionBar.visible = true
+      this.productionBar.scale.x = currentProduction.progress
+    }
+
+    // Check if completed
+    if (currentProduction.remainingTime <= 0) {
+      // Production complete - will be handled by GameEngine via getCompletedUnit()
+      console.log(`✅ ${this.name} completed training ${currentProduction.unitType}`)
     }
   }
 
@@ -156,11 +305,16 @@ export class Building extends Entity {
   }
 
   public update(deltaTime: number) {
-    // Buildings don't move, but may have animations or production queues
+    // Update production queue
+    this.updateProduction(deltaTime)
 
-    // Make health bar always face camera (billboard effect)
+    // Make health bar and production bar always face camera (billboard effect)
     if (this.healthBar && this.mesh) {
       this.healthBar.lookAt(this.healthBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
+    }
+
+    if (this.productionBar && this.mesh && this.productionBar.visible) {
+      this.productionBar.lookAt(this.productionBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
     }
   }
 

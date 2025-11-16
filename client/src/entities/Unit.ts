@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { Entity } from './Entity'
 import type { Resource } from './Resource'
 import type { Building } from './Building'
-import { UNIT_TYPES, COLORS } from '@/config/gameConfig'
+import { UNIT_TYPES, COLORS, GAME_CONFIG } from '@/config/gameConfig'
 import type { Position, UnitType, ResourceType } from '@/types/game'
 
 export enum UnitState {
@@ -13,6 +13,12 @@ export enum UnitState {
   Depositing = 'depositing',
   Building = 'building',
   Attacking = 'attacking',
+}
+
+export enum CombatStance {
+  Aggressive = 'aggressive', // Automatically attack nearby enemies
+  Defensive = 'defensive',   // Only attack when attacked
+  NoAction = 'no_action',    // Never attack automatically
 }
 
 /**
@@ -46,10 +52,15 @@ export class Unit extends Entity {
   public attackTimer = 0
   public attackInterval = 1.5 // seconds between attacks
   public attackRange = 2 // units
+  public combatStance: CombatStance = CombatStance.Aggressive
+  public visionRange = 12 // Range to detect enemies
+  public isRanged = false // Whether this unit attacks from range
+  public lastAttacker: Unit | null = null // Track who attacked this unit
 
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
+  private attackEffect: THREE.Mesh | null = null
 
   constructor(
     id: string,
@@ -69,6 +80,20 @@ export class Unit extends Entity {
     this.attack = unitConfig.attack
     this.defense = unitConfig.defense
     this.speed = unitConfig.speed
+
+    // Configure combat based on unit type
+    if ('range' in unitConfig && unitConfig.range) {
+      this.attackRange = unitConfig.range
+      this.isRanged = true
+      this.attackInterval = 2.0 // Ranged units attack slower
+    } else {
+      this.attackRange = GAME_CONFIG.ATTACK_RANGE.MELEE
+      this.isRanged = false
+      this.attackInterval = 1.5 // Melee units attack faster
+    }
+
+    // Villagers are passive by default
+    this.combatStance = type === 'villager' ? CombatStance.NoAction : CombatStance.Aggressive
 
     this.createMesh(playerColor)
   }
@@ -306,10 +331,16 @@ export class Unit extends Entity {
     }
   }
 
-  public takeDamage(damage: number) {
+  public takeDamage(damage: number, attacker?: Unit) {
     const actualDamage = Math.max(1, damage - this.defense)
     this.hp = Math.max(0, this.hp - actualDamage)
     this.updateHealthBar()
+
+    // Track last attacker for defensive stance
+    if (attacker) {
+      this.lastAttacker = attacker
+    }
+
     return this.hp <= 0
   }
 
@@ -323,6 +354,66 @@ export class Unit extends Entity {
     this.attackTimer = 0
 
     console.log(`⚔️ Unit ${this.id} attacking ${target.id}`)
+  }
+
+  /**
+   * Find and attack nearby enemies if in aggressive stance
+   */
+  public findAndAttackNearbyEnemy(allUnits: Unit[], allBuildings: Building[]) {
+    // Only auto-attack if aggressive stance and not busy
+    if (this.combatStance !== CombatStance.Aggressive) return
+    if (this.state !== UnitState.Idle) return
+    if (this.targetEnemy) return
+
+    // Find nearest enemy unit
+    let nearestEnemy: Unit | Building | null = null
+    let nearestDistance = this.visionRange
+
+    // Check enemy units
+    for (const unit of allUnits) {
+      if (unit.ownerId === this.ownerId || unit.hp <= 0) continue
+
+      const distance = this.position.distanceTo(unit.position)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestEnemy = unit
+      }
+    }
+
+    // Check enemy buildings (lower priority)
+    if (!nearestEnemy) {
+      for (const building of allBuildings) {
+        if (building.ownerId === this.ownerId || building.hp <= 0) continue
+
+        const distance = this.position.distanceTo(building.position)
+        if (distance < nearestDistance * 0.7) { // Only attack buildings if very close
+          nearestDistance = distance
+          nearestEnemy = building
+        }
+      }
+    }
+
+    // Attack if found
+    if (nearestEnemy) {
+      this.attackTarget(nearestEnemy)
+    }
+  }
+
+  /**
+   * Handle defensive stance - counter attack
+   */
+  public handleDefensiveStance() {
+    if (this.combatStance !== CombatStance.Defensive) return
+    if (this.state !== UnitState.Idle) return
+    if (this.targetEnemy) return
+
+    // Attack the last unit that attacked us
+    if (this.lastAttacker && this.lastAttacker.hp > 0) {
+      const distance = this.position.distanceTo(this.lastAttacker.position)
+      if (distance <= this.visionRange) {
+        this.attackTarget(this.lastAttacker)
+      }
+    }
   }
 
   /**
@@ -357,6 +448,9 @@ export class Unit extends Entity {
       this.position.copy(newPosition)
       if (this.mesh) {
         this.mesh.position.copy(this.position)
+        // Face the target
+        const angle = Math.atan2(direction.x, direction.z)
+        this.mesh.rotation.y = angle
       }
     } else {
       // In range - attack
@@ -364,7 +458,13 @@ export class Unit extends Entity {
 
       if (this.attackTimer >= this.attackInterval) {
         // Perform attack
-        const isDead = this.targetEnemy.takeDamage(this.attack)
+        const isDead = this.targetEnemy.takeDamage(
+          this.attack,
+          this.targetEnemy instanceof Unit ? this : undefined
+        )
+
+        // Create attack visual effect
+        this.createAttackEffect()
 
         console.log(`⚔️ ${this.id} deals ${this.attack} damage to ${this.targetEnemy.id}`)
 
@@ -376,6 +476,68 @@ export class Unit extends Entity {
 
         this.attackTimer = 0
       }
+    }
+  }
+
+  /**
+   * Create visual effect when attacking
+   */
+  private createAttackEffect() {
+    if (!this.mesh || !this.targetEnemy) return
+
+    // Remove old effect
+    if (this.attackEffect) {
+      this.mesh.remove(this.attackEffect)
+      this.attackEffect.geometry.dispose()
+      ;(this.attackEffect.material as THREE.Material).dispose()
+    }
+
+    if (this.isRanged) {
+      // Create projectile effect for ranged units
+      const projectileGeometry = new THREE.SphereGeometry(0.1, 8, 8)
+      const projectileMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffff00,
+        emissive: 0xffaa00
+      })
+      this.attackEffect = new THREE.Mesh(projectileGeometry, projectileMaterial)
+
+      // Position at unit
+      this.attackEffect.position.copy(this.position)
+      this.attackEffect.position.y += 1.0
+
+      // TODO: Animate projectile to target (requires animation system)
+
+      // For now, just show brief flash
+      setTimeout(() => {
+        if (this.attackEffect && this.mesh) {
+          this.mesh.remove(this.attackEffect)
+          this.attackEffect.geometry.dispose()
+          ;(this.attackEffect.material as THREE.Material).dispose()
+          this.attackEffect = null
+        }
+      }, 200)
+    } else {
+      // Create slash effect for melee units
+      const slashGeometry = new THREE.PlaneGeometry(1.5, 1.5)
+      const slashMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.5,
+        side: THREE.DoubleSide
+      })
+      this.attackEffect = new THREE.Mesh(slashGeometry, slashMaterial)
+      this.attackEffect.position.set(0.8, 1.0, 0)
+      this.mesh.add(this.attackEffect)
+
+      // Remove after short delay
+      setTimeout(() => {
+        if (this.attackEffect && this.mesh) {
+          this.mesh.remove(this.attackEffect)
+          this.attackEffect.geometry.dispose()
+          ;(this.attackEffect.material as THREE.Material).dispose()
+          this.attackEffect = null
+        }
+      }, 150)
     }
   }
 
@@ -401,6 +563,14 @@ export class Unit extends Entity {
     if (this.selectionRing) {
       this.selectionRing.visible = selected
     }
+  }
+
+  /**
+   * Change combat stance
+   */
+  public setCombatStance(stance: CombatStance) {
+    this.combatStance = stance
+    console.log(`Unit ${this.id} stance changed to ${stance}`)
   }
 
   public update(deltaTime: number) {
