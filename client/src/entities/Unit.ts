@@ -16,6 +16,8 @@ export class Unit extends Entity {
   public speed: number
   public isMoving = false
   public targetPosition: THREE.Vector3 | null = null
+  public path: Position[] = []
+  public currentWaypointIndex = 0
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
 
@@ -87,14 +89,31 @@ export class Unit extends Entity {
     this.mesh.add(this.healthBar)
   }
 
-  public moveTo(target: Position) {
-    this.targetPosition = new THREE.Vector3(target.x, target.y || 0, target.z || 0)
+  public moveTo(target: Position, path?: Position[]) {
+    if (path && path.length > 0) {
+      // Use pathfinding path
+      this.path = path
+      this.currentWaypointIndex = 0
+      const firstWaypoint = this.path[this.currentWaypointIndex]
+      this.targetPosition = new THREE.Vector3(
+        firstWaypoint.x,
+        firstWaypoint.y || 0,
+        firstWaypoint.z || 0
+      )
+    } else {
+      // Direct movement (no pathfinding)
+      this.path = []
+      this.currentWaypointIndex = 0
+      this.targetPosition = new THREE.Vector3(target.x, target.y || 0, target.z || 0)
+    }
     this.isMoving = true
   }
 
   public stop() {
     this.isMoving = false
     this.targetPosition = null
+    this.path = []
+    this.currentWaypointIndex = 0
   }
 
   public takeDamage(damage: number) {
@@ -136,10 +155,22 @@ export class Unit extends Entity {
       const distance = direction.length()
 
       if (distance < 0.1) {
-        // Reached target
-        this.stop()
+        // Reached current waypoint
+        if (this.path.length > 0 && this.currentWaypointIndex < this.path.length - 1) {
+          // Move to next waypoint in path
+          this.currentWaypointIndex++
+          const nextWaypoint = this.path[this.currentWaypointIndex]
+          this.targetPosition = new THREE.Vector3(
+            nextWaypoint.x,
+            nextWaypoint.y || 0,
+            nextWaypoint.z || 0
+          )
+        } else {
+          // Reached final destination
+          this.stop()
+        }
       } else {
-        // Move towards target
+        // Move towards current waypoint
         direction.normalize()
         const moveDistance = this.speed * deltaTime
         const actualMove = Math.min(moveDistance, distance)
