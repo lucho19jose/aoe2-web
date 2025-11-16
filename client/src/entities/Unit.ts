@@ -41,6 +41,12 @@ export class Unit extends Entity {
   public harvestTimer = 0
   public harvestInterval = 1 // seconds between harvests
 
+  // Combat
+  public targetEnemy: Unit | Building | null = null
+  public attackTimer = 0
+  public attackInterval = 1.5 // seconds between attacks
+  public attackRange = 2 // units
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
@@ -307,6 +313,72 @@ export class Unit extends Entity {
     return this.hp <= 0
   }
 
+  /**
+   * Attack a target enemy
+   */
+  public attackTarget(target: Unit | Building) {
+    this.targetEnemy = target
+    this.state = UnitState.Attacking
+    this.targetResource = null
+    this.attackTimer = 0
+
+    console.log(`⚔️ Unit ${this.id} attacking ${target.id}`)
+  }
+
+  /**
+   * Update combat state
+   */
+  private updateCombat(deltaTime: number) {
+    if (!this.targetEnemy || this.state !== UnitState.Attacking) return
+
+    // Check if target is still valid
+    if (this.targetEnemy instanceof Unit && this.targetEnemy.hp <= 0) {
+      this.targetEnemy = null
+      this.state = UnitState.Idle
+      return
+    }
+
+    if (this.targetEnemy instanceof Building && this.targetEnemy.hp <= 0) {
+      this.targetEnemy = null
+      this.state = UnitState.Idle
+      return
+    }
+
+    // Calculate distance to target
+    const targetPos = this.targetEnemy.position
+    const distance = this.position.distanceTo(targetPos)
+
+    // Move towards target if out of range
+    if (distance > this.attackRange) {
+      const direction = targetPos.clone().sub(this.position).normalize()
+      const moveDistance = this.speed * deltaTime
+      const newPosition = this.position.clone().add(direction.multiplyScalar(moveDistance))
+
+      this.position.copy(newPosition)
+      if (this.mesh) {
+        this.mesh.position.copy(this.position)
+      }
+    } else {
+      // In range - attack
+      this.attackTimer += deltaTime
+
+      if (this.attackTimer >= this.attackInterval) {
+        // Perform attack
+        const isDead = this.targetEnemy.takeDamage(this.attack)
+
+        console.log(`⚔️ ${this.id} deals ${this.attack} damage to ${this.targetEnemy.id}`)
+
+        if (isDead) {
+          console.log(`💀 ${this.targetEnemy.id} has been destroyed!`)
+          this.targetEnemy = null
+          this.state = UnitState.Idle
+        }
+
+        this.attackTimer = 0
+      }
+    }
+  }
+
   private updateHealthBar() {
     if (!this.healthBar) return
 
@@ -382,6 +454,10 @@ export class Unit extends Entity {
 
       case UnitState.Depositing:
         // Deposit is handled by GameEngine when unit reaches building
+        break
+
+      case UnitState.Attacking:
+        this.updateCombat(deltaTime)
         break
     }
 

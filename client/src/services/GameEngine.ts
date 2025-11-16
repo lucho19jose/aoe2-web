@@ -8,6 +8,7 @@ import { Entity } from '@/entities/Entity'
 import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
+import init, { AIManager, AIDifficulty } from '@/wasm/game_engine'
 
 export class GameEngine {
   private canvas: HTMLCanvasElement
@@ -39,6 +40,13 @@ export class GameEngine {
 
   // Pathfinding
   private navigationGrid: HybridNavigationGrid
+
+  // AI Manager
+  private aiManager: AIManager | null = null
+  private wasmInitialized = false
+
+  // Player ID
+  private playerId: string = 'player1'
 
   // Raycaster for mouse picking
   private raycaster: THREE.Raycaster
@@ -95,8 +103,41 @@ export class GameEngine {
     // Initialize scene
     this.initScene()
 
+    // Initialize WASM and AI
+    this.initWasmAndAI()
+
     // Handle window resize
     window.addEventListener('resize', this.onWindowResize.bind(this))
+  }
+
+  /**
+   * Initialize WASM module and AI Manager
+   */
+  private async initWasmAndAI() {
+    try {
+      await init()
+      this.wasmInitialized = true
+
+      // Create AI Manager
+      this.aiManager = new AIManager()
+
+      console.log('✅ WASM and AI Manager initialized')
+    } catch (error) {
+      console.error('❌ Failed to initialize WASM/AI:', error)
+    }
+  }
+
+  /**
+   * Add an AI player to the game
+   */
+  public addAIPlayer(playerId: string, difficulty: AIDifficulty) {
+    if (!this.aiManager) {
+      console.warn('AI Manager not initialized yet')
+      return
+    }
+
+    this.aiManager.add_ai_player(playerId, difficulty)
+    console.log(`🤖 Added AI player ${playerId} with difficulty ${difficulty}`)
   }
 
   private setupInputHandlers() {
@@ -459,7 +500,13 @@ export class GameEngine {
     const deltaTime = this.lastFrameTime > 0 ? (timestamp - this.lastFrameTime) / 1000 : 0
     this.lastFrameTime = timestamp
 
+    // Update AI players
+    if (this.wasmInitialized && this.aiManager) {
+      this.updateAI(deltaTime)
+    }
+
     // Update all entities
+    const deadUnits: string[] = []
     this.units.forEach(unit => {
       unit.update(deltaTime)
 
@@ -470,7 +517,24 @@ export class GameEngine {
           this.addPlayerResources(deposited.type, deposited.amount)
         }
       }
+
+      // Mark dead units for removal
+      if (unit.hp <= 0) {
+        deadUnits.push(unit.id)
+      }
     })
+
+    // Remove dead units
+    deadUnits.forEach(unitId => {
+      const unit = this.units.get(unitId)
+      if (unit) {
+        unit.dispose()
+        this.units.delete(unitId)
+        console.log(`💀 Removed dead unit ${unitId}`)
+      }
+    })
+
+    // Update buildings and resources
     this.buildings.forEach(building => building.update(deltaTime))
     this.resources.forEach(resource => resource.update(deltaTime))
 
@@ -482,6 +546,180 @@ export class GameEngine {
 
     // Update minimap
     this.updateMinimap()
+  }
+
+  /**
+   * Build game state for AI
+   */
+  private buildGameState() {
+    // Build units state
+    const units: Record<string, any> = {}
+    this.units.forEach((unit, id) => {
+      units[id] = {
+        id: unit.id,
+        unit_type: unit.type,
+        owner_id: unit.ownerId,
+        position: { x: Math.floor(unit.position.x), z: Math.floor(unit.position.z) },
+        state: unit.state,
+        hp: unit.hp,
+        carrying_resource: unit.currentResource || null
+      }
+    })
+
+    // Build buildings state
+    const buildings: Record<string, any> = {}
+    this.buildings.forEach((building, id) => {
+      buildings[id] = {
+        id: building.id,
+        building_type: building.type,
+        owner_id: building.ownerId,
+        position: { x: Math.floor(building.position.x), z: Math.floor(building.position.z) },
+        hp: building.hp,
+        is_complete: building.isComplete
+      }
+    })
+
+    // Build resources state
+    const resources: Record<string, any> = {}
+    this.resources.forEach((resource, id) => {
+      resources[id] = {
+        id: resource.id,
+        resource_type: resource.type,
+        position: { x: Math.floor(resource.position.x), z: Math.floor(resource.position.z) },
+        amount: resource.amount
+      }
+    })
+
+    // Get AI player resources (for now we'll use the same as human player - in future track per player)
+    const aiResources = {
+      food: this.playerResources.food,
+      wood: this.playerResources.wood,
+      gold: this.playerResources.gold,
+      stone: this.playerResources.stone
+    }
+
+    // Calculate population
+    const unitCount = Array.from(this.units.values()).filter(u => u.ownerId === this.playerId).length
+    const populationMax = 200 // TODO: calculate from houses
+
+    return {
+      units,
+      buildings,
+      resources,
+      player_resources: aiResources,
+      population: {
+        current: unitCount,
+        max: populationMax
+      }
+    }
+  }
+
+  /**
+   * Update AI players
+   */
+  private updateAI(deltaTime: number) {
+    if (!this.aiManager) return
+
+    try {
+      // Build game state
+      const gameState = this.buildGameState()
+
+      // Get AI actions
+      const actionsJson = this.aiManager.update_all(deltaTime, gameState)
+      const allActions = JSON.parse(actionsJson)
+
+      // Process actions from all AI players
+      allActions.forEach((actions: any[]) => {
+        actions.forEach((action: any) => {
+          this.processAIAction(action)
+        })
+      })
+    } catch (error) {
+      console.error('Error updating AI:', error)
+    }
+  }
+
+  /**
+   * Process a single AI action
+   */
+  private processAIAction(action: any) {
+    // Implementation for each action type
+    switch (true) {
+      case 'MoveUnit' in action: {
+        const { unit_id, target } = action.MoveUnit
+        const unit = this.units.get(unit_id)
+        if (unit) {
+          unit.moveTo({ x: target.x, y: 0, z: target.z }, [])
+          console.log(`🤖 AI: Moving unit ${unit_id} to (${target.x}, ${target.z})`)
+        }
+        break
+      }
+
+      case 'TrainUnit' in action: {
+        const { building_id, unit_type } = action.TrainUnit
+        const building = this.buildings.get(building_id)
+        if (building) {
+          // Create new unit near building
+          const unitId = `ai_unit_${Date.now()}`
+          const pos = {
+            x: building.position.x + 5,
+            y: 0,
+            z: building.position.z + 5
+          }
+          this.createUnit(unitId, unit_type as UnitType, pos, building.ownerId, building.color)
+          console.log(`🤖 AI: Training ${unit_type} at ${building_id}`)
+        }
+        break
+      }
+
+      case 'BuildStructure' in action: {
+        const { builder_id, building_type, position } = action.BuildStructure
+        const builder = this.units.get(builder_id)
+        if (builder) {
+          const buildingId = `ai_building_${Date.now()}`
+          const pos = { x: position.x, y: 0, z: position.z }
+          this.createBuilding(buildingId, building_type as BuildingType, pos, builder.ownerId, builder.color)
+          console.log(`🤖 AI: Building ${building_type} at (${position.x}, ${position.z})`)
+        }
+        break
+      }
+
+      case 'GatherResource' in action: {
+        const { unit_id, resource_id } = action.GatherResource
+        const unit = this.units.get(unit_id)
+        const resource = this.resources.get(resource_id)
+        if (unit && resource) {
+          unit.harvestResource(resource)
+          console.log(`🤖 AI: Unit ${unit_id} gathering ${resource_id}`)
+        }
+        break
+      }
+
+      case 'Attack' in action: {
+        const { unit_id, target_id } = action.Attack
+        const unit = this.units.get(unit_id)
+        const target = this.units.get(target_id) || this.buildings.get(target_id)
+        if (unit && target) {
+          unit.attackTarget(target)
+          console.log(`🤖 AI: Unit ${unit_id} attacking ${target_id}`)
+        }
+        break
+      }
+
+      case 'Research' in action: {
+        const { building_id, tech_id } = action.Research
+        console.log(`🤖 AI: Researching ${tech_id} at ${building_id}`)
+        // TODO: Implement research
+        break
+      }
+
+      case 'Idle' in action:
+        // Do nothing
+        break
+
+      default:
+        console.warn('Unknown AI action type:', action)
+    }
   }
 
   private updateMinimap() {
