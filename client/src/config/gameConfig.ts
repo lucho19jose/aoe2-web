@@ -177,6 +177,14 @@ export const BUILDING_TYPES = {
     cost: { wood: 150 },
     buildTime: 40,
   },
+  WONDER: {
+    name: 'Wonder',
+    hp: 4800,
+    size: { width: 6, height: 6 },
+    cost: { wood: 1000, stone: 1000, gold: 1000 },
+    buildTime: 300,
+    victoryTime: 200, // 200 in-game years to win with Wonder
+  },
 }
 
 export const RESOURCE_TYPES = {

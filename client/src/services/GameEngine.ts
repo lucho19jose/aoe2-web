@@ -4,15 +4,17 @@ import { InputHandler } from '@/utils/InputHandler'
 import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Resource } from '@/entities/Resource'
+import { Relic } from '@/entities/Relic'
 import { Entity } from '@/entities/Entity'
-import { GAME_CONFIG, RESOURCE_SPAWN, UNIT_TYPES } from '@/config/gameConfig'
+import { GAME_CONFIG, RESOURCE_SPAWN, UNIT_TYPES, BUILDING_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import { Formation, FormationType } from '@/utils/Formation'
-import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
+import type { UnitType, BuildingType, ResourceType, Resources, VictoryCondition, VictoryState } from '@/types/game'
 import init, { AIManager, AIDifficulty } from '@/wasm/game_engine'
 import { WebSocketService } from './WebSocketService'
 import type { WebSocketMessage } from './WebSocketService'
 import { getSoundService, SoundType } from './SoundService'
+import { getStatisticsService } from './StatisticsService'
 import { TECHNOLOGIES } from '@/config/technologies'
 import type { Technology } from '@/config/technologies'
 
@@ -33,6 +35,7 @@ export class GameEngine {
   private units: Map<string, Unit> = new Map()
   private buildings: Map<string, Building> = new Map()
   private resources: Map<string, Resource> = new Map()
+  private relics: Map<string, Relic> = new Map()
   private selectedEntities: Set<Entity> = new Set()
 
   // Player resources
@@ -71,8 +74,25 @@ export class GameEngine {
   // Sound service
   private soundService = getSoundService()
 
+  // Statistics service
+  private statisticsService = getStatisticsService()
+
   // Research system
   private researchedTechnologies: Set<string> = new Set()
+
+  // Victory/Defeat system
+  private victoryState: VictoryState = {
+    hasWon: false,
+    hasLost: false
+  }
+  private wonderTimer: number = 0
+  private wonderBuildingId: string | null = null
+  private relicVictoryTimer: number = 0
+  private requiredRelicsForVictory: number = 3
+  private relicVictoryTime: number = 100 // seconds with all relics to win
+
+  // Game time
+  private gameTime: number = 0
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement, gameId?: string) {
     this.canvas = canvas
@@ -125,6 +145,9 @@ export class GameEngine {
 
     // Initialize WASM and AI
     this.initWasmAndAI()
+
+    // Initialize statistics
+    this.statisticsService.initializePlayer(this.playerId, 'Player 1')
 
     // Initialize multiplayer if gameId provided
     if (gameId) {
@@ -245,6 +268,18 @@ export class GameEngine {
     this.webSocket.on('game_state_sync', (message: WebSocketMessage) => {
       console.log('🌐 Received game state sync:', message.data)
       // TODO: Sync game state with server
+    })
+
+    // Handle victory notification
+    this.webSocket.on('victory', (message: WebSocketMessage) => {
+      const { playerId, condition } = message.data
+      console.log(`🌐 Player ${playerId} achieved victory via ${condition}`)
+    })
+
+    // Handle defeat notification
+    this.webSocket.on('defeat', (message: WebSocketMessage) => {
+      const { playerId } = message.data
+      console.log(`🌐 Player ${playerId} was defeated`)
     })
 
     console.log('✅ Multiplayer handlers setup complete')
@@ -616,9 +651,49 @@ export class GameEngine {
     // Spawn resources procedurally
     this.spawnResources()
 
+    // Spawn relics on the map
+    this.spawnRelics()
+
     // Add grid helper
     const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x222222)
     this.scene.add(gridHelper)
+  }
+
+  /**
+   * Spawn relics procedurally across the map
+   */
+  private spawnRelics() {
+    const mapSize = 100
+    const mapMin = -mapSize / 2
+    const mapMax = mapSize / 2
+    const numRelics = 5 // Standard number of relics in AoE2
+
+    for (let i = 0; i < numRelics; i++) {
+      let x, z
+      let attempts = 0
+      const maxAttempts = 50
+
+      // Find a valid position (not too close to center)
+      do {
+        x = Math.random() * (mapMax - mapMin) + mapMin
+        z = Math.random() * (mapMax - mapMin) + mapMin
+        attempts++
+      } while (
+        (Math.abs(x) < 20 && Math.abs(z) < 20) && // Avoid center spawn area
+        attempts < maxAttempts
+      )
+
+      const relic = new Relic(
+        `relic_${i}`,
+        { x, y: 0, z },
+        `Holy Relic ${i + 1}`
+      )
+
+      this.relics.set(relic.id, relic)
+      relic.render(this.scene)
+    }
+
+    console.log(`✨ Spawned ${numRelics} relics on the map`)
   }
 
   private addTestObstacles() {
@@ -738,6 +813,20 @@ export class GameEngine {
     this.buildings.set(id, building)
     building.render(this.scene)
     building.completeBuild() // Auto-complete for now
+
+    // Track statistics
+    if (ownerId === this.playerId) {
+      this.statisticsService.recordBuildingBuilt(this.playerId)
+    }
+
+    // Check if it's a Wonder
+    if (type === 'wonder' && ownerId === this.playerId) {
+      this.wonderBuildingId = id
+      this.wonderTimer = 0
+      console.log('🏛️ Wonder construction started!')
+      this.soundService.play(SoundType.WONDER_COMPLETE)
+    }
+
     return building
   }
 
@@ -808,6 +897,10 @@ export class GameEngine {
         this.playerResources[resourceKey] -= amount
       }
 
+      // Track statistics
+      this.statisticsService.recordResourceSpent(this.playerId, cost)
+      this.statisticsService.recordUnitTrained(this.playerId, unitType)
+
       // Notify resource update
       if (this.onResourcesUpdate) {
         this.onResourcesUpdate(this.playerResources)
@@ -874,6 +967,13 @@ export class GameEngine {
         const resourceKey = resource as keyof Resources
         this.playerResources[resourceKey] -= amount
       }
+
+      // Track statistics
+      const resourcesCost: Partial<Resources> = {}
+      for (const [resource, amount] of Object.entries(cost)) {
+        if (amount) resourcesCost[resource as keyof Resources] = amount
+      }
+      this.statisticsService.recordResourceSpent(this.playerId, resourcesCost)
 
       // Notify resource update
       if (this.onResourcesUpdate) {
@@ -999,6 +1099,9 @@ export class GameEngine {
         // Play death sound
         this.soundService.play(SoundType.UNIT_DIE)
 
+        // Track statistics
+        this.statisticsService.recordUnitLost(unit.ownerId, unit.type)
+
         unit.dispose()
         this.units.delete(unitId)
         console.log(`💀 Removed dead unit ${unitId}`)
@@ -1021,11 +1124,24 @@ export class GameEngine {
       if (completedTech) {
         this.researchedTechnologies.add(completedTech)
         this.applyTechnologyEffects(completedTech)
+        this.statisticsService.recordTechnologyResearched(building.ownerId, completedTech)
         console.log(`✅ Technology ${completedTech} researched!`)
       }
     })
 
     this.resources.forEach(resource => resource.update(deltaTime))
+
+    // Update relics
+    this.relics.forEach(relic => relic.update(deltaTime))
+
+    // Update game time
+    this.gameTime += deltaTime
+    this.statisticsService.updateGameTime(this.playerId, this.gameTime)
+
+    // Check victory conditions
+    if (!this.victoryState.hasWon && !this.victoryState.hasLost) {
+      this.checkVictoryConditions(deltaTime)
+    }
 
     // Update controls
     this.controls.update()
@@ -1284,22 +1400,33 @@ export class GameEngine {
    * Add resources to player
    */
   private addPlayerResources(resourceType: ResourceType, amount: number) {
+    let resourceKey: keyof Resources
+
     switch (resourceType) {
       case 'tree':
+        resourceKey = 'wood'
         this.playerResources.wood += amount
         break
       case 'gold_mine':
+        resourceKey = 'gold'
         this.playerResources.gold += amount
         break
       case 'stone_mine':
+        resourceKey = 'stone'
         this.playerResources.stone += amount
         break
       case 'berry_bush':
       case 'deer':
       case 'fish':
+        resourceKey = 'food'
         this.playerResources.food += amount
         break
+      default:
+        return
     }
+
+    // Track statistics
+    this.statisticsService.recordResourceGathered(this.playerId, resourceKey, amount)
 
     // Trigger callback if set
     if (this.onResourcesUpdate) {
@@ -1357,6 +1484,173 @@ export class GameEngine {
     return new Set(this.researchedTechnologies)
   }
 
+  /**
+   * Check victory conditions
+   */
+  private checkVictoryConditions(deltaTime: number) {
+    // 1. Conquest Victory - All enemy units/buildings destroyed
+    const enemyUnits = Array.from(this.units.values()).filter(u => u.ownerId !== this.playerId)
+    const enemyBuildings = Array.from(this.buildings.values()).filter(b => b.ownerId !== this.playerId)
+
+    if (enemyUnits.length === 0 && enemyBuildings.length === 0) {
+      this.triggerVictory('conquest' as VictoryCondition)
+      return
+    }
+
+    // 2. Wonder Victory - Hold wonder for required time
+    if (this.wonderBuildingId) {
+      const wonder = this.buildings.get(this.wonderBuildingId)
+      if (wonder && wonder.isComplete && wonder.hp > 0) {
+        this.wonderTimer += deltaTime
+
+        const wonderConfig = BUILDING_TYPES.WONDER as any
+        const requiredTime = wonderConfig.victoryTime || 200
+
+        if (this.wonderTimer >= requiredTime) {
+          this.triggerVictory('wonder' as VictoryCondition)
+          return
+        }
+
+        // Log progress every 50 seconds
+        if (Math.floor(this.wonderTimer) % 50 === 0 && Math.floor(this.wonderTimer) > 0) {
+          const remaining = requiredTime - this.wonderTimer
+          console.log(`🏛️ Wonder standing: ${Math.floor(remaining)} seconds until victory`)
+        }
+      } else {
+        // Wonder destroyed
+        this.wonderTimer = 0
+        this.wonderBuildingId = null
+        console.log('💥 Wonder destroyed!')
+      }
+    }
+
+    // 3. Relic Victory - Hold required relics for time
+    const playerRelics = Array.from(this.relics.values()).filter(
+      r => r.garrisonedInBuildingId &&
+           this.buildings.get(r.garrisonedInBuildingId)?.ownerId === this.playerId
+    )
+
+    if (playerRelics.length >= this.requiredRelicsForVictory) {
+      this.relicVictoryTimer += deltaTime
+
+      if (this.relicVictoryTimer >= this.relicVictoryTime) {
+        this.triggerVictory('relic' as VictoryCondition)
+        return
+      }
+
+      // Log progress
+      if (Math.floor(this.relicVictoryTimer) % 20 === 0 && Math.floor(this.relicVictoryTimer) > 0) {
+        const remaining = this.relicVictoryTime - this.relicVictoryTimer
+        console.log(`✨ Holding ${playerRelics.length} relics: ${Math.floor(remaining)} seconds until victory`)
+      }
+    } else {
+      this.relicVictoryTimer = 0
+    }
+
+    // 4. Check for defeat - Player has no units or buildings
+    const playerUnits = Array.from(this.units.values()).filter(u => u.ownerId === this.playerId)
+    const playerBuildings = Array.from(this.buildings.values()).filter(b => b.ownerId === this.playerId)
+
+    if (playerUnits.length === 0 && playerBuildings.length === 0) {
+      this.triggerDefeat()
+      return
+    }
+  }
+
+  /**
+   * Trigger victory
+   */
+  private triggerVictory(condition: VictoryCondition) {
+    if (this.victoryState.hasWon) return
+
+    this.victoryState = {
+      hasWon: true,
+      hasLost: false,
+      condition,
+      winnerId: this.playerId,
+      timestamp: Date.now()
+    }
+
+    console.log(`🎉 VICTORY! Condition: ${condition}`)
+    this.soundService.play(SoundType.VICTORY)
+
+    // Show statistics
+    console.log(this.statisticsService.generateSummary(this.playerId))
+
+    // Send to multiplayer server
+    if (this.isMultiplayer && this.webSocket) {
+      this.webSocket.send({
+        type: 'victory',
+        data: {
+          playerId: this.playerId,
+          condition,
+          timestamp: Date.now()
+        }
+      })
+    }
+
+    // Pause game after a delay
+    setTimeout(() => {
+      this.stop()
+    }, 5000)
+  }
+
+  /**
+   * Trigger defeat
+   */
+  private triggerDefeat() {
+    if (this.victoryState.hasLost) return
+
+    this.victoryState = {
+      hasWon: false,
+      hasLost: true,
+      timestamp: Date.now()
+    }
+
+    console.log(`💀 DEFEAT!`)
+    this.soundService.play(SoundType.DEFEAT)
+
+    // Show statistics
+    console.log(this.statisticsService.generateSummary(this.playerId))
+
+    // Send to multiplayer server
+    if (this.isMultiplayer && this.webSocket) {
+      this.webSocket.send({
+        type: 'defeat',
+        data: {
+          playerId: this.playerId,
+          timestamp: Date.now()
+        }
+      })
+    }
+
+    // Pause game after a delay
+    setTimeout(() => {
+      this.stop()
+    }, 5000)
+  }
+
+  /**
+   * Get victory state
+   */
+  public getVictoryState(): VictoryState {
+    return { ...this.victoryState }
+  }
+
+  /**
+   * Get game statistics
+   */
+  public getStatistics() {
+    return this.statisticsService.getPlayerStatistics(this.playerId)
+  }
+
+  /**
+   * Get all relics
+   */
+  public getRelics(): Relic[] {
+    return Array.from(this.relics.values())
+  }
+
   public start() {
     if (this.isRunning) return
     this.isRunning = true
@@ -1384,9 +1678,11 @@ export class GameEngine {
     this.units.forEach(unit => unit.dispose())
     this.buildings.forEach(building => building.dispose())
     this.resources.forEach(resource => resource.dispose())
+    this.relics.forEach(relic => relic.dispose())
     this.units.clear()
     this.buildings.clear()
     this.resources.clear()
+    this.relics.clear()
     this.selectedEntities.clear()
 
     // Dispose input handler

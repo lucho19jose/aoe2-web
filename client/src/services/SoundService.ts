@@ -23,7 +23,13 @@ export enum SoundType {
   CHOP_WOOD = 'chop_wood',
   MINE_GOLD = 'mine_gold',
   MINE_STONE = 'mine_stone',
-  GATHER_FOOD = 'gather_food'
+  GATHER_FOOD = 'gather_food',
+
+  // Victory/Defeat sounds
+  VICTORY = 'victory',
+  DEFEAT = 'defeat',
+  WONDER_COMPLETE = 'wonder_complete',
+  RELIC_COLLECTED = 'relic_collected'
 }
 
 interface Sound {
@@ -87,6 +93,10 @@ export class SoundService {
     this.registerSound(SoundType.MINE_GOLD, 0.4, false)
     this.registerSound(SoundType.MINE_STONE, 0.4, false)
     this.registerSound(SoundType.GATHER_FOOD, 0.4, false)
+    this.registerSound(SoundType.VICTORY, 0.8, false)
+    this.registerSound(SoundType.DEFEAT, 0.8, false)
+    this.registerSound(SoundType.WONDER_COMPLETE, 0.7, false)
+    this.registerSound(SoundType.RELIC_COLLECTED, 0.6, false)
 
     console.log('✅ Sound Service initialized')
   }
