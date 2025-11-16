@@ -1,6 +1,60 @@
 use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::pathfinding::{NavigationGrid, Position};
+use std::collections::HashMap;
+
+/// Game state representation for AI decision-making
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameState {
+    pub units: HashMap<String, UnitState>,
+    pub buildings: HashMap<String, BuildingState>,
+    pub resources: HashMap<String, ResourceState>,
+    pub player_resources: PlayerResources,
+    pub population: PopulationData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnitState {
+    pub id: String,
+    pub unit_type: String,
+    pub owner_id: String,
+    pub position: Position,
+    pub state: String, // "idle", "moving", "harvesting", etc.
+    pub hp: f32,
+    pub carrying_resource: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildingState {
+    pub id: String,
+    pub building_type: String,
+    pub owner_id: String,
+    pub position: Position,
+    pub hp: f32,
+    pub is_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceState {
+    pub id: String,
+    pub resource_type: String,
+    pub position: Position,
+    pub amount: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerResources {
+    pub food: f32,
+    pub wood: f32,
+    pub gold: f32,
+    pub stone: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PopulationData {
+    pub current: u32,
+    pub max: u32,
+}
 
 /// AI difficulty levels
 #[wasm_bindgen]
@@ -100,11 +154,15 @@ impl AIPlayer {
 
 impl AIPlayer {
     /// Main decision-making function
-    fn decide_actions(&mut self, _game_state: JsValue) -> Vec<AIAction> {
+    fn decide_actions(&mut self, game_state: JsValue) -> Vec<AIAction> {
         let mut actions = Vec::new();
 
-        // Parse game state (would normally deserialize from JsValue)
-        // For now, return placeholder logic
+        // Parse game state
+        let state: Result<GameState, _> = serde_wasm_bindgen::from_value(game_state);
+        if state.is_err() {
+            return actions; // Return empty if parsing fails
+        }
+        let state = state.unwrap();
 
         // Economic decisions (every 2-5 seconds depending on difficulty)
         let economic_cooldown = match self.difficulty {
@@ -114,7 +172,7 @@ impl AIPlayer {
         };
 
         if self.last_economic_decision >= economic_cooldown {
-            actions.extend(self.decide_economic_actions());
+            actions.extend(self.decide_economic_actions(&state));
             self.last_economic_decision = 0.0;
         }
 
@@ -126,7 +184,7 @@ impl AIPlayer {
         };
 
         if self.last_military_decision >= military_cooldown {
-            actions.extend(self.decide_military_actions());
+            actions.extend(self.decide_military_actions(&state));
             self.last_military_decision = 0.0;
         }
 
@@ -134,35 +192,348 @@ impl AIPlayer {
     }
 
     /// Decide economic actions (gathering, building, training villagers)
-    fn decide_economic_actions(&self) -> Vec<AIAction> {
-        let actions = Vec::new();
+    fn decide_economic_actions(&self, state: &GameState) -> Vec<AIAction> {
+        let mut actions = Vec::new();
 
-        // Simplified AI logic - in real implementation, this would:
-        // 1. Check current resources
-        // 2. Count idle villagers
-        // 3. Decide what to build/train
-        // 4. Assign villagers to resources based on priorities
+        // Get AI's units and buildings
+        let my_units: Vec<&UnitState> = state.units.values()
+            .filter(|u| u.owner_id == self.player_id)
+            .collect();
 
-        // Example: Train villager if we have resources
-        // actions.push(AIAction::TrainUnit {
-        //     building_id: "town_center_1".to_string(),
-        //     unit_type: "villager".to_string(),
-        // });
+        let my_buildings: Vec<&BuildingState> = state.buildings.values()
+            .filter(|b| b.owner_id == self.player_id && b.is_complete)
+            .collect();
+
+        // Count villagers
+        let villagers: Vec<&UnitState> = my_units.iter()
+            .filter(|u| u.unit_type == "villager")
+            .cloned()
+            .collect();
+
+        let idle_villagers: Vec<&UnitState> = villagers.iter()
+            .filter(|u| u.state == "idle")
+            .cloned()
+            .collect();
+
+        // 1. Train villagers if we have resources and population space
+        let town_centers: Vec<&BuildingState> = my_buildings.iter()
+            .filter(|b| b.building_type == "town_center")
+            .cloned()
+            .collect();
+
+        if !town_centers.is_empty() && state.population.current < state.population.max {
+            // Cost: 50 food
+            if state.player_resources.food >= 50.0 {
+                // Train based on difficulty and current villager count
+                let desired_villagers = match self.difficulty {
+                    AIDifficulty::Easy => 20,
+                    AIDifficulty::Medium => 30,
+                    AIDifficulty::Hard => 40,
+                };
+
+                if villagers.len() < desired_villagers {
+                    actions.push(AIAction::TrainUnit {
+                        building_id: town_centers[0].id.clone(),
+                        unit_type: "villager".to_string(),
+                    });
+                }
+            }
+        }
+
+        // 2. Build houses if population is near max
+        if state.population.current + 5 >= state.population.max && state.player_resources.wood >= 30.0 {
+            if let Some(builder) = idle_villagers.first() {
+                // Find safe position near town center
+                if let Some(tc) = town_centers.first() {
+                    let build_pos = Position {
+                        x: tc.position.x + 10,
+                        z: tc.position.z + 10,
+                    };
+
+                    actions.push(AIAction::BuildStructure {
+                        builder_id: builder.id.clone(),
+                        building_type: "house".to_string(),
+                        position: build_pos,
+                    });
+                }
+            }
+        }
+
+        // 3. Assign idle villagers to resource gathering based on priorities
+        for villager in idle_villagers.iter().take(3) {
+            // Determine which resource to gather based on priorities and current resources
+            let resource_type = self.choose_resource_to_gather(state);
+
+            // Find nearest resource of that type
+            if let Some(resource) = self.find_nearest_resource(state, &villager.position, &resource_type) {
+                actions.push(AIAction::GatherResource {
+                    unit_id: villager.id.clone(),
+                    resource_id: resource.id.clone(),
+                });
+            }
+        }
+
+        // 4. Build economic buildings
+        if villagers.len() >= 10 {
+            // Build lumber camp if we have wood workers
+            let lumber_camps = my_buildings.iter()
+                .filter(|b| b.building_type == "lumber_camp")
+                .count();
+
+            if lumber_camps == 0 && state.player_resources.wood >= 100.0 {
+                if let Some(builder) = idle_villagers.first() {
+                    // Find forest
+                    if let Some(tree) = self.find_nearest_resource(state, &builder.position, "tree") {
+                        actions.push(AIAction::BuildStructure {
+                            builder_id: builder.id.clone(),
+                            building_type: "lumber_camp".to_string(),
+                            position: tree.position.clone(),
+                        });
+                    }
+                }
+            }
+
+            // Build mining camp for gold/stone
+            let mining_camps = my_buildings.iter()
+                .filter(|b| b.building_type == "mining_camp")
+                .count();
+
+            if mining_camps == 0 && state.player_resources.wood >= 100.0 {
+                if let Some(builder) = idle_villagers.get(1) {
+                    // Find gold mine
+                    if let Some(gold) = self.find_nearest_resource(state, &builder.position, "gold_mine") {
+                        actions.push(AIAction::BuildStructure {
+                            builder_id: builder.id.clone(),
+                            building_type: "mining_camp".to_string(),
+                            position: gold.position.clone(),
+                        });
+                    }
+                }
+            }
+        }
 
         actions
     }
 
     /// Decide military actions (training units, attacking, defending)
-    fn decide_military_actions(&self) -> Vec<AIAction> {
-        let actions = Vec::new();
+    fn decide_military_actions(&self, state: &GameState) -> Vec<AIAction> {
+        let mut actions = Vec::new();
 
-        // Simplified AI logic - in real implementation:
-        // 1. Scout enemy positions
-        // 2. Decide unit composition
-        // 3. Train military units based on aggression level
-        // 4. Attack or defend based on strategy
+        // Get AI's units and buildings
+        let my_units: Vec<&UnitState> = state.units.values()
+            .filter(|u| u.owner_id == self.player_id)
+            .collect();
+
+        let my_buildings: Vec<&BuildingState> = state.buildings.values()
+            .filter(|b| b.owner_id == self.player_id && b.is_complete)
+            .collect();
+
+        let enemy_units: Vec<&UnitState> = state.units.values()
+            .filter(|u| u.owner_id != self.player_id)
+            .collect();
+
+        // Count military units
+        let military_units: Vec<&UnitState> = my_units.iter()
+            .filter(|u| u.unit_type != "villager")
+            .cloned()
+            .collect();
+
+        // 1. Build barracks if we have enough economy
+        let barracks: Vec<&BuildingState> = my_buildings.iter()
+            .filter(|b| b.building_type == "barracks")
+            .cloned()
+            .collect();
+
+        let villagers_count = my_units.iter().filter(|u| u.unit_type == "villager").count();
+
+        if barracks.is_empty() && villagers_count >= 10 && state.player_resources.wood >= 175.0 {
+            // Find a villager to build
+            if let Some(villager) = my_units.iter().find(|u| u.unit_type == "villager" && u.state == "idle") {
+                // Build near town center
+                if let Some(tc) = my_buildings.iter().find(|b| b.building_type == "town_center") {
+                    let build_pos = Position {
+                        x: tc.position.x + 15,
+                        z: tc.position.z,
+                    };
+
+                    actions.push(AIAction::BuildStructure {
+                        builder_id: villager.id.clone(),
+                        building_type: "barracks".to_string(),
+                        position: build_pos,
+                    });
+                }
+            }
+        }
+
+        // 2. Train military units based on aggression level
+        if !barracks.is_empty() {
+            let desired_army_size = match self.difficulty {
+                AIDifficulty::Easy => (self.aggression * 10.0) as usize,
+                AIDifficulty::Medium => (self.aggression * 20.0) as usize,
+                AIDifficulty::Hard => (self.aggression * 30.0) as usize,
+            };
+
+            if military_units.len() < desired_army_size {
+                // Train militia/swordsman (cost: 60 food, 20 gold)
+                if state.player_resources.food >= 60.0 && state.player_resources.gold >= 20.0 {
+                    if state.population.current < state.population.max {
+                        actions.push(AIAction::TrainUnit {
+                            building_id: barracks[0].id.clone(),
+                            unit_type: "militia".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. Attack strategy based on aggression
+        let threat_level = self.evaluate_threat_in_state(state);
+
+        if self.aggression > 0.5 && military_units.len() >= 5 {
+            // Offensive: attack enemy units or buildings
+            if let Some(target) = self.find_attack_target(state, &enemy_units) {
+                // Send all military units to attack
+                for unit in military_units.iter().take(military_units.len() / 2) {
+                    actions.push(AIAction::Attack {
+                        unit_id: unit.id.clone(),
+                        target_id: target.clone(),
+                    });
+                }
+            }
+        } else if threat_level > 0.6 {
+            // Defensive: protect base if threatened
+            if let Some(enemy) = self.find_nearest_enemy(state) {
+                for unit in military_units.iter() {
+                    actions.push(AIAction::Attack {
+                        unit_id: unit.id.clone(),
+                        target_id: enemy.id.clone(),
+                    });
+                }
+            }
+        }
+
+        // 4. Build archery range for ranged units (higher difficulty)
+        if self.difficulty == AIDifficulty::Hard {
+            let archery_ranges = my_buildings.iter()
+                .filter(|b| b.building_type == "archery_range")
+                .count();
+
+            if archery_ranges == 0 && barracks.len() >= 1 {
+                if state.player_resources.wood >= 175.0 {
+                    if let Some(villager) = my_units.iter().find(|u| u.unit_type == "villager" && u.state == "idle") {
+                        if let Some(tc) = my_buildings.iter().find(|b| b.building_type == "town_center") {
+                            let build_pos = Position {
+                                x: tc.position.x - 15,
+                                z: tc.position.z,
+                            };
+
+                            actions.push(AIAction::BuildStructure {
+                                builder_id: villager.id.clone(),
+                                building_type: "archery_range".to_string(),
+                                position: build_pos,
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         actions
+    }
+
+    /// Choose which resource to gather based on priorities and current stockpile
+    fn choose_resource_to_gather(&self, state: &GameState) -> String {
+        let res = &state.player_resources;
+
+        // Calculate need for each resource (priority / current amount)
+        let food_need = if res.food > 0.0 { self.food_priority / res.food } else { self.food_priority * 10.0 };
+        let wood_need = if res.wood > 0.0 { self.wood_priority / res.wood } else { self.wood_priority * 10.0 };
+        let gold_need = if res.gold > 0.0 { self.gold_priority / res.gold } else { self.gold_priority * 10.0 };
+        let stone_need = if res.stone > 0.0 { self.stone_priority / res.stone } else { self.stone_priority * 10.0 };
+
+        // Return resource with highest need
+        if food_need >= wood_need && food_need >= gold_need && food_need >= stone_need {
+            "berry_bush".to_string() // or "deer"
+        } else if wood_need >= gold_need && wood_need >= stone_need {
+            "tree".to_string()
+        } else if gold_need >= stone_need {
+            "gold_mine".to_string()
+        } else {
+            "stone_mine".to_string()
+        }
+    }
+
+    /// Find nearest resource of given type
+    fn find_nearest_resource<'a>(&self, state: &'a GameState, from: &Position, resource_type: &str) -> Option<&'a ResourceState> {
+        state.resources.values()
+            .filter(|r| r.resource_type == resource_type && r.amount > 0.0)
+            .min_by(|a, b| {
+                let dist_a = a.position.distance(from);
+                let dist_b = b.position.distance(from);
+                dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// Evaluate threat level in current state
+    fn evaluate_threat_in_state(&self, state: &GameState) -> f32 {
+        let enemy_units: Vec<&UnitState> = state.units.values()
+            .filter(|u| u.owner_id != self.player_id)
+            .collect();
+
+        // Find own town center position
+        let tc_pos = state.buildings.values()
+            .find(|b| b.owner_id == self.player_id && b.building_type == "town_center")
+            .map(|b| &b.position);
+
+        if let Some(tc_pos) = tc_pos {
+            // Count enemies near base (within 30 units)
+            let nearby_enemies = enemy_units.iter()
+                .filter(|e| {
+                    let dist = e.position.distance(tc_pos);
+                    dist < 30.0
+                })
+                .count();
+
+            // Threat increases with number of nearby enemies
+            (nearby_enemies as f32 / 10.0).min(1.0)
+        } else {
+            0.5
+        }
+    }
+
+    /// Find best attack target
+    fn find_attack_target(&self, state: &GameState, enemies: &[&UnitState]) -> Option<String> {
+        if enemies.is_empty() {
+            // No enemy units, target buildings
+            return state.buildings.values()
+                .find(|b| b.owner_id != self.player_id)
+                .map(|b| b.id.clone());
+        }
+
+        // Prioritize villagers for economic damage
+        if let Some(villager) = enemies.iter().find(|e| e.unit_type == "villager") {
+            return Some(villager.id.clone());
+        }
+
+        // Otherwise, target weakest unit
+        enemies.iter()
+            .min_by(|a, b| a.hp.partial_cmp(&b.hp).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|u| u.id.clone())
+    }
+
+    /// Find nearest enemy to base
+    fn find_nearest_enemy<'a>(&self, state: &'a GameState) -> Option<&'a UnitState> {
+        let tc_pos = state.buildings.values()
+            .find(|b| b.owner_id == self.player_id && b.building_type == "town_center")
+            .map(|b| &b.position)?;
+
+        state.units.values()
+            .filter(|u| u.owner_id != self.player_id)
+            .min_by(|a, b| {
+                let dist_a = a.position.distance(tc_pos);
+                let dist_b = b.position.distance(tc_pos);
+                dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
     }
 
     /// Evaluate threat level
