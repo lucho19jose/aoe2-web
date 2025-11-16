@@ -186,6 +186,21 @@ export class GameEngine {
 
     this.raycaster.setFromCamera(mousePos, this.camera)
 
+    // Check if selected entity is a building - set rally point
+    const selectedBuilding = Array.from(this.selectedEntities).find(
+      (e): e is Building => e instanceof Building
+    )
+
+    if (selectedBuilding && this.terrain) {
+      const intersects = this.raycaster.intersectObject(this.terrain)
+      if (intersects.length > 0) {
+        const point = intersects[0].point
+        selectedBuilding.setRallyPoint({ x: point.x, y: 0, z: point.z })
+        console.log(`🚩 Rally point set for ${selectedBuilding.name}`)
+        return
+      }
+    }
+
     // Check if clicked on a resource
     const resourceObjects = Array.from(this.resources.values())
       .map(r => r.mesh)
@@ -334,6 +349,20 @@ export class GameEngine {
         break
       case 'escape':
         this.cancelPlacement()
+        break
+
+      // Unit training hotkeys
+      case 'v':
+        this.trainUnitFromSelectedBuilding('villager' as UnitType)
+        break
+      case 'q': // Militia from barracks
+        this.trainUnitFromSelectedBuilding('militia' as UnitType)
+        break
+      case 'w': // Archer from archery range
+        this.trainUnitFromSelectedBuilding('archer' as UnitType)
+        break
+      case 'e': // Knight from stable
+        this.trainUnitFromSelectedBuilding('knight' as UnitType)
         break
     }
   }
@@ -586,6 +615,77 @@ export class GameEngine {
     }
   }
 
+  /**
+   * Spawn a completed unit from production queue
+   */
+  private spawnCompletedUnit(building: Building, unitType: UnitType) {
+    // Spawn unit at rally point or near building
+    const spawnPos = building.rallyPoint || {
+      x: building.position.x + building.size.width + 1,
+      y: 0,
+      z: building.position.z
+    }
+
+    const unitId = `unit_${unitType}_${Date.now()}`
+    const unit = this.createUnit(
+      unitId,
+      unitType,
+      { x: building.position.x, y: 0, z: building.position.z },
+      'player1',
+      '#FF0000'
+    )
+
+    // Move unit to rally point if set
+    if (building.rallyPoint) {
+      unit.moveTo(building.rallyPoint)
+    }
+
+    console.log(`🎖️  ${UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]?.name || unitType} trained! Moving to rally point.`)
+  }
+
+  /**
+   * Train a unit from selected building
+   */
+  private trainUnitFromSelectedBuilding(unitType: UnitType) {
+    const selectedBuilding = Array.from(this.selectedEntities).find(
+      (e): e is Building => e instanceof Building
+    )
+
+    if (!selectedBuilding) {
+      console.warn('No building selected')
+      return
+    }
+
+    if (!selectedBuilding.isComplete) {
+      console.warn('Building is not complete')
+      return
+    }
+
+    // Get unit cost
+    const unitConfig = UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]
+    if (!unitConfig) {
+      console.warn(`Unknown unit type: ${unitType}`)
+      return
+    }
+
+    // Check if can afford
+    const cost = unitConfig.cost
+    if (!this.canAffordBuilding(cost)) {
+      console.warn(`Not enough resources to train ${unitConfig.name}`)
+      return
+    }
+
+    // Train unit
+    const success = selectedBuilding.trainUnit(unitType, cost)
+    if (success) {
+      // Deduct cost
+      this.deductBuildingCost(cost)
+      console.log(`🏋️  Training ${unitConfig.name}... (${selectedBuilding.productionQueue.getSize()} in queue)`)
+    } else {
+      console.warn(`Cannot train ${unitConfig.name} from ${selectedBuilding.name}`)
+    }
+  }
+
   private initScene() {
     // Add lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
@@ -782,7 +882,18 @@ export class GameEngine {
         this.handleVillagerConstruction(unit, deltaTime)
       }
     })
-    this.buildings.forEach(building => building.update(deltaTime))
+
+    // Update buildings and check for completed units
+    this.buildings.forEach(building => {
+      building.update(deltaTime)
+
+      // Check if a unit has been trained
+      const completedUnit = building.productionQueue.update(deltaTime)
+      if (completedUnit) {
+        this.spawnCompletedUnit(building, completedUnit.type)
+      }
+    })
+
     this.resources.forEach(resource => resource.update(deltaTime))
 
     // Update controls

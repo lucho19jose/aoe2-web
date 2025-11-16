@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { Entity } from './Entity'
-import { BUILDING_TYPES, COLORS } from '@/config/gameConfig'
-import type { Position, BuildingType } from '@/types/game'
+import { ProductionQueue } from './ProductionQueue'
+import { BUILDING_TYPES, COLORS, UNIT_TYPES } from '@/config/gameConfig'
+import type { Position, BuildingType, UnitType, Resources } from '@/types/game'
 
 /**
  * Represents a game building
@@ -16,6 +17,11 @@ export class Building extends Entity {
   public size: { width: number; height: number }
   private selectionBox: THREE.LineSegments | null = null
   private healthBar: THREE.Mesh | null = null
+
+  // Production queue
+  public productionQueue: ProductionQueue
+  public rallyPoint: Position | null = null
+  private rallyPointMarker: THREE.Mesh | null = null
 
   constructor(
     id: string,
@@ -33,6 +39,16 @@ export class Building extends Entity {
     this.maxHp = buildingConfig.hp
     this.hp = this.maxHp
     this.size = buildingConfig.size
+
+    // Initialize production queue
+    this.productionQueue = new ProductionQueue(5)
+
+    // Set default rally point (in front of building)
+    this.rallyPoint = {
+      x: position.x,
+      y: 0,
+      z: position.z + this.size.width + 2
+    }
 
     this.createMesh(playerColor)
   }
@@ -155,8 +171,107 @@ export class Building extends Entity {
     }
   }
 
+  /**
+   * Train a unit
+   */
+  public trainUnit(unitType: UnitType, cost: Partial<Resources>): boolean {
+    if (!this.isComplete) return false
+
+    const unitConfig = UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]
+    if (!unitConfig) return false
+
+    // Check if building can produce this unit type
+    if (!this.canProduceUnit(unitType)) return false
+
+    // Add to queue
+    const trainingTime = unitConfig.trainTime || 10 // Default 10 seconds
+    return this.productionQueue.addUnit(unitType, trainingTime, cost)
+  }
+
+  /**
+   * Check if building can produce a unit type
+   */
+  public canProduceUnit(unitType: UnitType): boolean {
+    switch (this.type) {
+      case 'town_center':
+        return unitType === 'villager'
+      case 'barracks':
+        return ['militia', 'spearman', 'swordsman'].includes(unitType)
+      case 'archery_range':
+        return ['archer', 'crossbowman', 'skirmisher'].includes(unitType)
+      case 'stable':
+        return ['scout', 'knight', 'cavalry_archer'].includes(unitType)
+      default:
+        return false
+    }
+  }
+
+  /**
+   * Set rally point
+   */
+  public setRallyPoint(position: Position) {
+    this.rallyPoint = position
+
+    // Update rally point marker
+    if (this.rallyPointMarker) {
+      this.rallyPointMarker.position.set(position.x, position.y, position.z)
+    } else {
+      this.createRallyPointMarker()
+    }
+  }
+
+  /**
+   * Create rally point visual marker
+   */
+  private createRallyPointMarker() {
+    if (!this.rallyPoint || !this.mesh) return
+
+    // Create flag pole
+    const poleGeometry = new THREE.CylinderGeometry(0.05, 0.05, 2)
+    const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x8b4513 })
+    const pole = new THREE.Mesh(poleGeometry, poleMaterial)
+    pole.position.set(this.rallyPoint.x, 1, this.rallyPoint.z)
+
+    // Create flag
+    const flagGeometry = new THREE.PlaneGeometry(1, 0.6)
+    const flagMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff0000,
+      side: THREE.DoubleSide
+    })
+    const flag = new THREE.Mesh(flagGeometry, flagMaterial)
+    flag.position.set(0.5, 0.7, 0)
+    pole.add(flag)
+
+    this.rallyPointMarker = pole
+    this.mesh.parent?.add(pole)
+  }
+
+  /**
+   * Hide rally point marker
+   */
+  public hideRallyPoint() {
+    if (this.rallyPointMarker) {
+      this.rallyPointMarker.parent?.remove(this.rallyPointMarker)
+      this.rallyPointMarker.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry?.dispose()
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose())
+          } else {
+            child.material?.dispose()
+          }
+        }
+      })
+      this.rallyPointMarker = null
+    }
+  }
+
   public update(deltaTime: number) {
-    // Buildings don't move, but may have animations or production queues
+    // Update production queue
+    if (this.isComplete) {
+      this.productionQueue.update(deltaTime)
+      // Note: Unit spawning will be handled by GameEngine
+    }
 
     // Make health bar always face camera (billboard effect)
     if (this.healthBar && this.mesh) {
@@ -171,6 +286,9 @@ export class Building extends Entity {
   }
 
   public dispose() {
+    // Clean up rally point marker
+    this.hideRallyPoint()
+
     if (this.mesh) {
       this.mesh.parent?.remove(this.mesh)
       this.mesh.traverse((child) => {
