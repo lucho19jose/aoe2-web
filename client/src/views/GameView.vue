@@ -26,6 +26,10 @@
           </div>
         </div>
         <div class="game-time">{{ gameTime }}</div>
+        <div class="formation-indicator">
+          <q-icon name="format_shapes" size="20px" />
+          <span>{{ currentFormation }}</span>
+        </div>
         <q-btn
           flat
           round
@@ -41,7 +45,24 @@
           <canvas ref="minimapCanvas" width="200" height="200"></canvas>
         </div>
         <div class="control-panel">
-          <div v-if="selectedUnit" class="unit-info">
+          <div v-if="selectedBuilding && selectedBuilding.canProduce?.length > 0" class="building-info">
+            <production-panel
+              :building="selectedBuilding"
+              :resources="resources"
+              @train="handleTrainUnit"
+              @cancel="handleCancelUnit"
+            />
+          </div>
+          <div v-else-if="selectedBuilding && hasResearchTech(selectedBuilding)" class="building-info">
+            <research-panel
+              :building="selectedBuilding"
+              :resources="resources"
+              :researched-techs="researchedTechs"
+              @research="handleResearch"
+              @cancel="handleCancelResearch"
+            />
+          </div>
+          <div v-else-if="selectedUnit" class="unit-info">
             <p><strong>{{ selectedUnit.name }}</strong></p>
             <div class="unit-stats">
               <div>HP: {{ selectedUnit.hp }}/{{ selectedUnit.maxHp }}</div>
@@ -76,6 +97,11 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGameStore } from '@/stores/game'
 import { GameEngine } from '@/services/GameEngine'
+import { FormationType } from '@/utils/Formation'
+import ProductionPanel from '@/components/ProductionPanel.vue'
+import ResearchPanel from '@/components/ResearchPanel.vue'
+import type { UnitType } from '@/types/game'
+import { getTechnologiesForBuilding } from '@/config/technologies'
 
 const router = useRouter()
 const gameStore = useGameStore()
@@ -93,19 +119,149 @@ const resources = ref({
 
 const gameTime = ref('00:00')
 const selectedUnit = ref<any>(null)
+const selectedBuilding = ref<any>(null)
+const currentFormation = ref('Box')
+const researchedTechs = ref<Set<string>>(new Set())
 
 let gameEngine: GameEngine | null = null
+let selectionUpdateInterval: number | null = null
 
 onMounted(() => {
   if (gameCanvas.value) {
     gameEngine = new GameEngine(gameCanvas.value, minimapCanvas.value!)
+
+    // Set resource update callback
+    gameEngine.setOnResourcesUpdate((newResources) => {
+      resources.value = { ...newResources }
+    })
+
+    // Setup keyboard shortcuts for formations
+    setupFormationHotkeys()
+
     gameEngine.start()
+
+    // Update selection periodically
+    selectionUpdateInterval = window.setInterval(() => {
+      updateSelection()
+      // Update researched technologies
+      if (gameEngine) {
+        researchedTechs.value = gameEngine.getResearchedTechnologies()
+      }
+    }, 100)
   }
 })
 
 onUnmounted(() => {
+  if (selectionUpdateInterval) {
+    clearInterval(selectionUpdateInterval)
+  }
   gameEngine?.stop()
+  document.removeEventListener('keydown', handleFormationHotkey)
 })
+
+const setupFormationHotkeys = () => {
+  document.addEventListener('keydown', handleFormationHotkey)
+}
+
+const handleFormationHotkey = (event: KeyboardEvent) => {
+  if (!gameEngine) return
+
+  switch (event.key) {
+    case 'F1':
+      gameEngine.setFormation(FormationType.Line)
+      currentFormation.value = 'Line'
+      break
+    case 'F2':
+      gameEngine.setFormation(FormationType.Column)
+      currentFormation.value = 'Column'
+      break
+    case 'F3':
+      gameEngine.setFormation(FormationType.Box)
+      currentFormation.value = 'Box'
+      break
+    case 'F4':
+      gameEngine.setFormation(FormationType.Wedge)
+      currentFormation.value = 'Wedge'
+      break
+    case 'F5':
+      gameEngine.setFormation(FormationType.Scattered)
+      currentFormation.value = 'Scattered'
+      break
+  }
+}
+
+const updateSelection = () => {
+  if (!gameEngine) return
+
+  const selected = gameEngine.getSelectedEntities()
+
+  if (selected.length === 0) {
+    selectedUnit.value = null
+    selectedBuilding.value = null
+    return
+  }
+
+  const entity = selected[0]
+
+  // Check if it's a building
+  if ('canProduce' in entity) {
+    selectedBuilding.value = {
+      id: entity.id,
+      name: entity.name,
+      type: entity.type,
+      canProduce: entity.canProduce || [],
+      productionQueue: entity.productionQueue || [],
+      maxQueueSize: entity.maxQueueSize || 5,
+      researchQueue: entity.researchQueue || []
+    }
+    selectedUnit.value = null
+  } else {
+    // It's a unit
+    selectedUnit.value = {
+      name: entity.name || 'Unit',
+      hp: Math.floor(entity.hp || 0),
+      maxHp: Math.floor(entity.maxHp || 100),
+      attack: Math.floor(entity.attack || 0)
+    }
+    selectedBuilding.value = null
+  }
+}
+
+const handleTrainUnit = (unitType: UnitType) => {
+  if (!gameEngine || !selectedBuilding.value) return
+
+  const success = gameEngine.trainUnit(selectedBuilding.value.id, unitType)
+
+  if (success) {
+    console.log(`Training ${unitType}`)
+  }
+}
+
+const handleCancelUnit = (index: number) => {
+  console.log(`Cancelling unit at index ${index}`)
+  // TODO: Implement cancel logic in GameEngine
+}
+
+const hasResearchTech = (building: any): boolean => {
+  if (!building || !building.type) return false
+  const techs = getTechnologiesForBuilding(building.type)
+  return techs.length > 0
+}
+
+const handleResearch = (techId: string) => {
+  if (!gameEngine || !selectedBuilding.value) return
+
+  const success = gameEngine.researchTechnology(selectedBuilding.value.id, techId)
+
+  if (success) {
+    console.log(`Researching ${techId}`)
+  }
+}
+
+const handleCancelResearch = (index: number) => {
+  console.log(`Cancelling research at index ${index}`)
+  // TODO: Implement cancel research logic in GameEngine
+}
 
 const goToSettings = () => {
   showGameMenu.value = false
@@ -176,6 +332,17 @@ const exitGame = () => {
 .game-time {
   font-size: 1.2rem;
   font-weight: 600;
+}
+
+.formation-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  font-size: 1rem;
+  font-weight: 500;
 }
 
 .bottom-ui {
