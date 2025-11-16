@@ -201,6 +201,30 @@ export class GameEngine {
       }
     }
 
+    // Check if clicked on an enemy unit (attack command)
+    const unitObjects = Array.from(this.units.values())
+      .map(u => u.mesh)
+      .filter(Boolean) as THREE.Object3D[]
+
+    const unitIntersects = this.raycaster.intersectObjects(unitObjects, true)
+
+    if (unitIntersects.length > 0) {
+      const clicked = unitIntersects[0].object
+      const targetUnitId = clicked.userData.entityId
+      const targetUnit = this.units.get(targetUnitId)
+
+      if (targetUnit && targetUnit.ownerId !== 'player1') {
+        // Attack enemy unit
+        this.selectedEntities.forEach(entity => {
+          if (entity instanceof Unit) {
+            entity.attackUnit(targetUnit)
+          }
+        })
+        console.log(`⚔️  Attacking ${targetUnit.name}`)
+        return
+      }
+    }
+
     // Check if clicked on a resource
     const resourceObjects = Array.from(this.resources.values())
       .map(r => r.mesh)
@@ -722,6 +746,11 @@ export class GameEngine {
     // Add Town Center for resource deposit
     this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
 
+    // Add some enemy units for testing combat
+    this.createUnit('enemy1', 'militia' as UnitType, { x: 15, y: 0, z: 0 }, 'player2', '#0000FF')
+    this.createUnit('enemy2', 'militia' as UnitType, { x: 17, y: 0, z: 2 }, 'player2', '#0000FF')
+    this.createUnit('enemy3', 'archer' as UnitType, { x: 15, y: 0, z: -2 }, 'player2', '#0000FF')
+
     // Spawn resources procedurally
     this.spawnResources()
 
@@ -866,8 +895,15 @@ export class GameEngine {
     this.lastFrameTime = timestamp
 
     // Update all entities
+    const deadUnits: string[] = []
     this.units.forEach(unit => {
       unit.update(deltaTime)
+
+      // Check if unit is dead
+      if (unit.isDead()) {
+        deadUnits.push(unit.id)
+        return
+      }
 
       // Check if unit should deposit resources
       if (unit.state === UnitState.Depositing && unit.targetDepositBuilding) {
@@ -880,6 +916,17 @@ export class GameEngine {
       // Check if unit should build
       if (unit.state === UnitState.Building && unit.targetBuilding) {
         this.handleVillagerConstruction(unit, deltaTime)
+      }
+    })
+
+    // Remove dead units
+    deadUnits.forEach(unitId => {
+      const unit = this.units.get(unitId)
+      if (unit) {
+        console.log(`💀 ${unit.name} has been killed`)
+        unit.dispose()
+        this.units.delete(unitId)
+        this.selectedEntities.delete(unit)
       }
     })
 

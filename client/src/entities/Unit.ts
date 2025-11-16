@@ -46,6 +46,12 @@ export class Unit extends Entity {
   public buildTimer = 0
   public buildRate = 0.1 // progress per second
 
+  // Combat
+  public targetEnemy: Unit | null = null
+  public attackTimer = 0
+  public attackSpeed = 1.5 // attacks per second
+  public range: number = 1.5 // attack range
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
@@ -68,6 +74,7 @@ export class Unit extends Entity {
     this.attack = unitConfig.attack
     this.defense = unitConfig.defense
     this.speed = unitConfig.speed
+    this.range = (unitConfig as any).range || 1.5 // Use ranged attack range if available
 
     this.createMesh(playerColor)
   }
@@ -305,6 +312,76 @@ export class Unit extends Entity {
     }
   }
 
+  /**
+   * Attack an enemy unit
+   */
+  public attackUnit(enemy: Unit) {
+    this.targetEnemy = enemy
+    this.state = UnitState.Moving
+    this.targetResource = null
+    this.targetBuilding = null
+
+    // Move towards enemy if not in range
+    const distance = this.position.distanceTo(enemy.position)
+    if (distance > this.range) {
+      this.moveTo({
+        x: enemy.position.x,
+        y: 0,
+        z: enemy.position.z
+      })
+    }
+  }
+
+  /**
+   * Perform attack on target enemy
+   */
+  private performAttack(): boolean {
+    if (!this.targetEnemy || this.targetEnemy.hp <= 0) {
+      this.targetEnemy = null
+      this.state = UnitState.Idle
+      return false
+    }
+
+    // Check if enemy is in range
+    const distance = this.position.distanceTo(this.targetEnemy.position)
+    if (distance > this.range) {
+      // Chase enemy
+      this.moveTo({
+        x: this.targetEnemy.position.x,
+        y: 0,
+        z: this.targetEnemy.position.z
+      })
+      return false
+    }
+
+    // Deal damage
+    const isDead = this.targetEnemy.takeDamage(this.attack)
+
+    if (isDead) {
+      this.targetEnemy = null
+      this.state = UnitState.Idle
+    }
+
+    return true
+  }
+
+  /**
+   * Stop attacking
+   */
+  public stopAttacking() {
+    this.targetEnemy = null
+    if (this.state === UnitState.Attacking) {
+      this.state = UnitState.Idle
+    }
+  }
+
+  /**
+   * Check if unit is dead
+   */
+  public isDead(): boolean {
+    return this.hp <= 0
+  }
+
   public takeDamage(damage: number) {
     const actualDamage = Math.max(1, damage - this.defense)
     this.hp = Math.max(0, this.hp - actualDamage)
@@ -379,7 +456,7 @@ export class Unit extends Entity {
       }
     }
 
-    // Handle harvesting state machine
+    // Handle state machine
     switch (this.state) {
       case UnitState.Harvesting:
         this.performHarvest(deltaTime)
@@ -387,6 +464,15 @@ export class Unit extends Entity {
 
       case UnitState.Depositing:
         // Deposit is handled by GameEngine when unit reaches building
+        break
+
+      case UnitState.Attacking:
+        // Handle attack timer
+        this.attackTimer += deltaTime
+        if (this.attackTimer >= 1 / this.attackSpeed) {
+          this.performAttack()
+          this.attackTimer = 0
+        }
         break
     }
 
@@ -417,6 +503,12 @@ export class Unit extends Entity {
       if (this.isNearPosition(this.targetBuilding.position, 3)) {
         this.state = UnitState.Building
         // Construction will be handled by GameEngine
+      }
+    } else if (this.state === UnitState.Moving && this.targetEnemy) {
+      // Reached enemy, start attacking
+      if (this.isNearPosition(this.targetEnemy.position, this.range)) {
+        this.state = UnitState.Attacking
+        this.attackTimer = 0
       }
     }
   }
