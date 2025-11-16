@@ -1,7 +1,19 @@
 import * as THREE from 'three'
 import { Entity } from './Entity'
+import type { Resource } from './Resource'
+import type { Building } from './Building'
 import { UNIT_TYPES, COLORS } from '@/config/gameConfig'
-import type { Position, UnitType } from '@/types/game'
+import type { Position, UnitType, ResourceType } from '@/types/game'
+
+export enum UnitState {
+  Idle = 'idle',
+  Moving = 'moving',
+  Harvesting = 'harvesting',
+  Returning = 'returning',
+  Depositing = 'depositing',
+  Building = 'building',
+  Attacking = 'attacking',
+}
 
 /**
  * Represents a game unit (villager, soldier, etc.)
@@ -14,12 +26,24 @@ export class Unit extends Entity {
   public attack: number
   public defense: number
   public speed: number
+  public state: UnitState = UnitState.Idle
   public isMoving = false
   public targetPosition: THREE.Vector3 | null = null
   public path: Position[] = []
   public currentWaypointIndex = 0
+
+  // Harvesting
+  public targetResource: Resource | null = null
+  public targetDepositBuilding: Building | null = null
+  public carriedResourceType: ResourceType | null = null
+  public carriedResourceAmount = 0
+  public maxCarryCapacity = 10
+  public harvestTimer = 0
+  public harvestInterval = 1 // seconds between harvests
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
+  private resourceIndicator: THREE.Mesh | null = null
 
   constructor(
     id: string,
@@ -114,6 +138,166 @@ export class Unit extends Entity {
     this.targetPosition = null
     this.path = []
     this.currentWaypointIndex = 0
+    this.state = UnitState.Idle
+  }
+
+  /**
+   * Start harvesting a resource
+   */
+  public harvestResource(resource: Resource, depositBuilding: Building) {
+    if (this.type !== 'villager') {
+      console.warn('Only villagers can harvest resources')
+      return
+    }
+
+    this.targetResource = resource
+    this.targetDepositBuilding = depositBuilding
+    this.state = UnitState.Moving
+
+    // Move to resource
+    this.moveTo({
+      x: resource.position.x,
+      y: 0,
+      z: resource.position.z
+    })
+  }
+
+  /**
+   * Perform harvesting action
+   */
+  private performHarvest(deltaTime: number) {
+    if (!this.targetResource || !this.targetResource.isAvailable()) {
+      this.stopHarvesting()
+      return
+    }
+
+    this.harvestTimer += deltaTime
+
+    if (this.harvestTimer >= this.harvestInterval) {
+      const harvestAmount = this.targetResource.harvestRate
+      const harvested = this.targetResource.harvest(harvestAmount)
+
+      this.carriedResourceAmount += harvested
+      this.carriedResourceType = this.targetResource.type
+      this.harvestTimer = 0
+
+      // Update resource indicator
+      this.updateResourceIndicator()
+
+      // Check if carrying max capacity or resource depleted
+      if (this.carriedResourceAmount >= this.maxCarryCapacity || this.targetResource.depleted) {
+        this.returnToDeposit()
+      }
+    }
+  }
+
+  /**
+   * Return resources to deposit building
+   */
+  private returnToDeposit() {
+    if (!this.targetDepositBuilding) {
+      this.stopHarvesting()
+      return
+    }
+
+    this.state = UnitState.Returning
+
+    // Move to deposit building
+    this.moveTo({
+      x: this.targetDepositBuilding.position.x,
+      y: 0,
+      z: this.targetDepositBuilding.position.z
+    })
+  }
+
+  /**
+   * Deposit carried resources
+   */
+  public depositResources(): { type: ResourceType; amount: number } | null {
+    if (this.carriedResourceAmount === 0 || !this.carriedResourceType) {
+      return null
+    }
+
+    const deposited = {
+      type: this.carriedResourceType,
+      amount: this.carriedResourceAmount
+    }
+
+    // Clear carried resources
+    this.carriedResourceAmount = 0
+    this.carriedResourceType = null
+    this.updateResourceIndicator()
+
+    // Return to harvest more if resource still available
+    if (this.targetResource && this.targetResource.isAvailable()) {
+      this.state = UnitState.Moving
+      this.moveTo({
+        x: this.targetResource.position.x,
+        y: 0,
+        z: this.targetResource.position.z
+      })
+    } else {
+      this.stopHarvesting()
+    }
+
+    return deposited
+  }
+
+  /**
+   * Stop harvesting
+   */
+  public stopHarvesting() {
+    this.targetResource = null
+    this.targetDepositBuilding = null
+    this.state = UnitState.Idle
+    this.stop()
+  }
+
+  /**
+   * Check if unit is near target position
+   */
+  public isNearPosition(position: THREE.Vector3, threshold: number = 2): boolean {
+    return this.position.distanceTo(position) < threshold
+  }
+
+  /**
+   * Update resource indicator visual
+   */
+  private updateResourceIndicator() {
+    // Remove old indicator
+    if (this.resourceIndicator && this.mesh) {
+      this.mesh.remove(this.resourceIndicator)
+      this.resourceIndicator.geometry.dispose()
+      ;(this.resourceIndicator.material as THREE.Material).dispose()
+      this.resourceIndicator = null
+    }
+
+    // Create new indicator if carrying resources
+    if (this.carriedResourceAmount > 0 && this.carriedResourceType && this.mesh) {
+      const indicatorGeometry = new THREE.SphereGeometry(0.3, 8, 8)
+      let color = 0xffffff
+
+      switch (this.carriedResourceType) {
+        case 'tree':
+          color = 0x8b4513 // brown for wood
+          break
+        case 'gold_mine':
+          color = 0xffd700 // gold
+          break
+        case 'stone_mine':
+          color = 0x808080 // gray
+          break
+        case 'berry_bush':
+        case 'deer':
+          color = 0xff6b6b // red for food
+          break
+      }
+
+      const indicatorMaterial = new THREE.MeshStandardMaterial({ color })
+      this.resourceIndicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial)
+      this.resourceIndicator.position.set(0.5, 1.2, 0)
+      this.mesh.add(this.resourceIndicator)
+    }
   }
 
   public takeDamage(damage: number) {
@@ -148,6 +332,7 @@ export class Unit extends Entity {
   }
 
   public update(deltaTime: number) {
+    // Handle movement
     if (this.isMoving && this.targetPosition) {
       // Calculate direction to target
       const direction = new THREE.Vector3()
@@ -168,6 +353,7 @@ export class Unit extends Entity {
         } else {
           // Reached final destination
           this.stop()
+          this.onReachedDestination()
         }
       } else {
         // Move towards current waypoint
@@ -188,9 +374,39 @@ export class Unit extends Entity {
       }
     }
 
+    // Handle harvesting state machine
+    switch (this.state) {
+      case UnitState.Harvesting:
+        this.performHarvest(deltaTime)
+        break
+
+      case UnitState.Depositing:
+        // Deposit is handled by GameEngine when unit reaches building
+        break
+    }
+
     // Make health bar always face camera (billboard effect)
     if (this.healthBar && this.mesh) {
       this.healthBar.lookAt(this.healthBar.parent!.position.clone().add(new THREE.Vector3(0, 0, 1)))
+    }
+  }
+
+  /**
+   * Called when unit reaches its destination
+   */
+  private onReachedDestination() {
+    if (this.state === UnitState.Moving && this.targetResource) {
+      // Reached resource, start harvesting
+      if (this.isNearPosition(this.targetResource.position, 2)) {
+        this.state = UnitState.Harvesting
+        this.targetResource.isBeingHarvested = true
+      }
+    } else if (this.state === UnitState.Returning && this.targetDepositBuilding) {
+      // Reached deposit building
+      if (this.isNearPosition(this.targetDepositBuilding.position, 3)) {
+        this.state = UnitState.Depositing
+        // Deposit will be triggered by GameEngine
+      }
     }
   }
 

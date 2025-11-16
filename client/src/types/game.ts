@@ -72,3 +72,22 @@ export interface GameConfig {
   startingResources: Resources
   difficulty: 'easy' | 'medium' | 'hard'
 }
+
+export enum ResourceType {
+  Tree = 'tree',
+  GoldMine = 'gold_mine',
+  StoneMine = 'stone_mine',
+  BerryBush = 'berry_bush',
+  Deer = 'deer',
+  Fish = 'fish'
+}
+
+export interface ResourceNode {
+  id: string
+  type: ResourceType
+  position: Position
+  amount: number
+  maxAmount: number
+  harvestRate: number
+  regenerates: boolean
+}

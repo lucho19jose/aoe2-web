@@ -3,10 +3,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { InputHandler } from '@/utils/InputHandler'
 import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
+import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
-import { GAME_CONFIG } from '@/config/gameConfig'
-import { NavigationGrid } from '@/pathfinding/NavigationGrid'
-import type { UnitType, BuildingType } from '@/types/game'
+import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
+import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
+import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 
 export class GameEngine {
   private canvas: HTMLCanvasElement
@@ -24,10 +25,20 @@ export class GameEngine {
   private terrain: THREE.Mesh | null = null
   private units: Map<string, Unit> = new Map()
   private buildings: Map<string, Building> = new Map()
+  private resources: Map<string, Resource> = new Map()
   private selectedEntities: Set<Entity> = new Set()
 
+  // Player resources
+  private playerResources: Resources = {
+    food: 200,
+    wood: 200,
+    gold: 100,
+    stone: 100
+  }
+  private onResourcesUpdate?: (resources: Resources) => void
+
   // Pathfinding
-  private navigationGrid: NavigationGrid
+  private navigationGrid: HybridNavigationGrid
 
   // Raycaster for mouse picking
   private raycaster: THREE.Raycaster
@@ -74,8 +85,8 @@ export class GameEngine {
     // Setup raycaster
     this.raycaster = new THREE.Raycaster()
 
-    // Setup navigation grid (100x100 map)
-    this.navigationGrid = new NavigationGrid(100, 1)
+    // Setup navigation grid (100x100 map) - uses WASM when available
+    this.navigationGrid = new HybridNavigationGrid(100, 1)
 
     // Setup input handler
     this.inputHandler = new InputHandler(this.canvas)
@@ -147,6 +158,36 @@ export class GameEngine {
 
     this.raycaster.setFromCamera(mousePos, this.camera)
 
+    // Check if clicked on a resource
+    const resourceObjects = Array.from(this.resources.values())
+      .map(r => r.mesh)
+      .filter(Boolean) as THREE.Object3D[]
+
+    const resourceIntersects = this.raycaster.intersectObjects(resourceObjects, true)
+
+    if (resourceIntersects.length > 0) {
+      // Clicked on a resource - start harvesting
+      const clicked = resourceIntersects[0].object
+      const resourceId = clicked.userData.entityId
+      const resource = this.resources.get(resourceId)
+
+      if (resource && resource.isAvailable()) {
+        // Find nearest deposit building (town center for now)
+        const depositBuilding = Array.from(this.buildings.values()).find(
+          b => b.type === 'town_center'
+        )
+
+        if (depositBuilding) {
+          this.selectedEntities.forEach(entity => {
+            if (entity instanceof Unit && entity.type === 'villager') {
+              entity.harvestResource(resource, depositBuilding)
+            }
+          })
+        }
+      }
+      return
+    }
+
     // Check if clicked on terrain
     if (this.terrain) {
       const intersects = this.raycaster.intersectObject(this.terrain)
@@ -156,6 +197,9 @@ export class GameEngine {
         // Move selected units using pathfinding
         this.selectedEntities.forEach(entity => {
           if (entity instanceof Unit) {
+            // Stop harvesting if currently harvesting
+            entity.stopHarvesting()
+
             // Find path from unit's current position to target
             const startPos = { x: entity.position.x, y: 0, z: entity.position.z }
             const goalPos = { x: point.x, y: 0, z: point.z }
@@ -264,16 +308,16 @@ export class GameEngine {
     this.terrain.receiveShadow = true
     this.scene.add(this.terrain)
 
-    // Add some test units
+    // Add some test units (villagers for harvesting)
     this.createUnit('unit1', 'villager' as UnitType, { x: 0, y: 0, z: 0 }, 'player1', '#FF0000')
-    this.createUnit('unit2', 'militia' as UnitType, { x: 5, y: 0, z: 5 }, 'player1', '#FF0000')
-    this.createUnit('unit3', 'archer' as UnitType, { x: -5, y: 0, z: -5 }, 'player1', '#FF0000')
+    this.createUnit('unit2', 'villager' as UnitType, { x: 2, y: 0, z: 0 }, 'player1', '#FF0000')
+    this.createUnit('unit3', 'villager' as UnitType, { x: -2, y: 0, z: 0 }, 'player1', '#FF0000')
 
-    // Add a test building
-    this.createBuilding('building1', 'house' as BuildingType, { x: 10, y: 0, z: 0 }, 'player1', '#FF0000')
+    // Add Town Center for resource deposit
+    this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
 
-    // Add obstacles for pathfinding testing
-    this.addTestObstacles()
+    // Spawn resources procedurally
+    this.spawnResources()
 
     // Add grid helper
     const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x222222)
@@ -313,6 +357,78 @@ export class GameEngine {
     })
   }
 
+  /**
+   * Spawn resources procedurally across the map
+   */
+  private spawnResources() {
+    const mapSize = 100 // 100x100 map
+    const mapMin = -mapSize / 2
+    const mapMax = mapSize / 2
+    let resourceId = 0
+
+    // Helper function to spawn resource clusters
+    const spawnCluster = (
+      resourceType: ResourceType,
+      clusterConfig: typeof RESOURCE_SPAWN.TREE
+    ) => {
+      const numClusters = Math.floor(
+        Math.random() * (clusterConfig.maxClusters - clusterConfig.minClusters + 1) +
+        clusterConfig.minClusters
+      )
+
+      for (let c = 0; c < numClusters; c++) {
+        // Random cluster center (avoid center of map for player spawn)
+        const clusterX = Math.random() * (mapMax - mapMin) + mapMin
+        const clusterZ = Math.random() * (mapMax - mapMin) + mapMin
+
+        // Skip if too close to center (player spawn area)
+        if (Math.abs(clusterX) < 15 && Math.abs(clusterZ) < 15) {
+          continue
+        }
+
+        const numResources = Math.floor(
+          Math.random() * (clusterConfig.maxPerCluster - clusterConfig.minPerCluster + 1) +
+          clusterConfig.minPerCluster
+        )
+
+        for (let r = 0; r < numResources; r++) {
+          // Random position within cluster radius
+          const angle = Math.random() * Math.PI * 2
+          const distance = Math.random() * clusterConfig.clusterRadius
+          const x = clusterX + Math.cos(angle) * distance
+          const z = clusterZ + Math.sin(angle) * distance
+
+          // Check bounds
+          if (x < mapMin || x > mapMax || z < mapMin || z > mapMax) {
+            continue
+          }
+
+          // Create resource
+          const resource = new Resource(
+            `resource_${resourceType}_${resourceId++}`,
+            resourceType,
+            { x, y: 0, z }
+          )
+
+          this.resources.set(resource.id, resource)
+          resource.render(this.scene)
+
+          // Add as obstacle to pathfinding
+          this.navigationGrid.addCircularObstacle({ x, y: 0, z }, 1)
+        }
+      }
+    }
+
+    // Spawn all resource types
+    spawnCluster('tree' as ResourceType, RESOURCE_SPAWN.TREE)
+    spawnCluster('gold_mine' as ResourceType, RESOURCE_SPAWN.GOLD_MINE)
+    spawnCluster('stone_mine' as ResourceType, RESOURCE_SPAWN.STONE_MINE)
+    spawnCluster('berry_bush' as ResourceType, RESOURCE_SPAWN.BERRY_BUSH)
+    spawnCluster('deer' as ResourceType, RESOURCE_SPAWN.DEER)
+
+    console.log(`✅ Spawned ${this.resources.size} resources on the map`)
+  }
+
   public createUnit(id: string, type: UnitType, position: {x: number, y: number, z: number}, ownerId: string, color: string) {
     const unit = new Unit(id, type, position, ownerId, color)
     this.units.set(id, unit)
@@ -344,8 +460,19 @@ export class GameEngine {
     this.lastFrameTime = timestamp
 
     // Update all entities
-    this.units.forEach(unit => unit.update(deltaTime))
+    this.units.forEach(unit => {
+      unit.update(deltaTime)
+
+      // Check if unit should deposit resources
+      if (unit.state === 'depositing' && unit.targetDepositBuilding) {
+        const deposited = unit.depositResources()
+        if (deposited) {
+          this.addPlayerResources(deposited.type, deposited.amount)
+        }
+      }
+    })
     this.buildings.forEach(building => building.update(deltaTime))
+    this.resources.forEach(resource => resource.update(deltaTime))
 
     // Update controls
     this.controls.update()
@@ -368,6 +495,35 @@ export class GameEngine {
     // Draw terrain bounds
     ctx.strokeStyle = '#4a4a4a'
     ctx.strokeRect(10, 10, 180, 180)
+
+    // Draw resources
+    this.resources.forEach(resource => {
+      const x = ((resource.position.x + 50) / 100) * 180 + 10
+      const z = ((resource.position.z + 50) / 100) * 180 + 10
+
+      // Color based on resource type
+      switch (resource.type) {
+        case 'tree':
+          ctx.fillStyle = '#228b22'
+          break
+        case 'gold_mine':
+          ctx.fillStyle = '#ffd700'
+          break
+        case 'stone_mine':
+          ctx.fillStyle = '#808080'
+          break
+        case 'berry_bush':
+          ctx.fillStyle = '#9370db'
+          break
+        case 'deer':
+          ctx.fillStyle = '#d2691e'
+          break
+        default:
+          ctx.fillStyle = '#ffffff'
+      }
+
+      ctx.fillRect(x - 1, z - 1, 2, 2)
+    })
 
     // Draw buildings
     ctx.fillStyle = '#8b4513'
@@ -397,6 +553,54 @@ export class GameEngine {
     ctx.stroke()
   }
 
+  /**
+   * Add resources to player
+   */
+  private addPlayerResources(resourceType: ResourceType, amount: number) {
+    switch (resourceType) {
+      case 'tree':
+        this.playerResources.wood += amount
+        break
+      case 'gold_mine':
+        this.playerResources.gold += amount
+        break
+      case 'stone_mine':
+        this.playerResources.stone += amount
+        break
+      case 'berry_bush':
+      case 'deer':
+      case 'fish':
+        this.playerResources.food += amount
+        break
+    }
+
+    // Trigger callback if set
+    if (this.onResourcesUpdate) {
+      this.onResourcesUpdate(this.playerResources)
+    }
+
+    console.log(`📦 +${amount} ${resourceType} | Resources:`, {
+      food: Math.floor(this.playerResources.food),
+      wood: Math.floor(this.playerResources.wood),
+      gold: Math.floor(this.playerResources.gold),
+      stone: Math.floor(this.playerResources.stone)
+    })
+  }
+
+  /**
+   * Get player resources
+   */
+  public getPlayerResources(): Resources {
+    return { ...this.playerResources }
+  }
+
+  /**
+   * Set callback for resource updates
+   */
+  public setOnResourcesUpdate(callback: (resources: Resources) => void) {
+    this.onResourcesUpdate = callback
+  }
+
   public getSelectedEntities(): Entity[] {
     return Array.from(this.selectedEntities)
   }
@@ -421,8 +625,10 @@ export class GameEngine {
     // Dispose all entities
     this.units.forEach(unit => unit.dispose())
     this.buildings.forEach(building => building.dispose())
+    this.resources.forEach(resource => resource.dispose())
     this.units.clear()
     this.buildings.clear()
+    this.resources.clear()
     this.selectedEntities.clear()
 
     // Dispose input handler
