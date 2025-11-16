@@ -41,6 +41,11 @@ export class Unit extends Entity {
   public harvestTimer = 0
   public harvestInterval = 1 // seconds between harvests
 
+  // Building
+  public targetBuilding: Building | null = null
+  public buildTimer = 0
+  public buildRate = 0.1 // progress per second
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
@@ -406,6 +411,12 @@ export class Unit extends Entity {
       if (this.isNearPosition(this.targetDepositBuilding.position, 3)) {
         this.state = UnitState.Depositing
         // Deposit will be triggered by GameEngine
+      }
+    } else if (this.state === UnitState.Moving && this.targetBuilding) {
+      // Reached building construction site
+      if (this.isNearPosition(this.targetBuilding.position, 3)) {
+        this.state = UnitState.Building
+        // Construction will be handled by GameEngine
       }
     }
   }

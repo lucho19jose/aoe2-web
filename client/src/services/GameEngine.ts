@@ -1,11 +1,12 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { InputHandler } from '@/utils/InputHandler'
-import { Unit } from '@/entities/Unit'
+import { Unit, UnitState } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
-import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
+import { BuildingPlacement } from '@/entities/BuildingPlacement'
+import { GAME_CONFIG, RESOURCE_SPAWN, BUILDING_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 
@@ -45,6 +46,11 @@ export class GameEngine {
 
   // Selection box visual
   private selectionBox: THREE.Line | null = null
+
+  // Building placement
+  private placementMode: BuildingType | null = null
+  private buildingGhost: BuildingPlacement | null = null
+  private ghostPosition: THREE.Vector3 | null = null
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -100,25 +106,47 @@ export class GameEngine {
   }
 
   private setupInputHandlers() {
-    // Left click - select units/buildings
+    // Left click - select units/buildings or place building
     this.inputHandler.on('leftclick', (event) => {
-      this.handleLeftClick(event.position)
+      if (this.placementMode) {
+        this.handleBuildingPlacement(event.position)
+      } else {
+        this.handleLeftClick(event.position)
+      }
     })
 
-    // Right click - move command
+    // Right click - move command or cancel placement
     this.inputHandler.on('rightclick', (event) => {
-      this.handleRightClick(event.position)
+      if (this.placementMode) {
+        this.cancelPlacement()
+      } else {
+        this.handleRightClick(event.position)
+      }
     })
 
-    // Drag - box selection
+    // Drag - box selection (only when not placing)
     this.inputHandler.on('dragend', (event) => {
-      this.handleDragSelect(event.start, event.end)
+      if (!this.placementMode) {
+        this.handleDragSelect(event.start, event.end)
+      }
     })
 
     // Drag visual feedback
     this.inputHandler.on('drag', (event) => {
-      this.updateSelectionBox(event.start, event.current)
+      if (!this.placementMode) {
+        this.updateSelectionBox(event.start, event.current)
+      }
     })
+
+    // Mouse move - update building ghost position
+    this.inputHandler.on('mousemove', (event) => {
+      if (this.placementMode) {
+        this.updateBuildingGhost(event.position)
+      }
+    })
+
+    // Keyboard shortcuts for buildings
+    window.addEventListener('keydown', this.handleKeyDown.bind(this))
   }
 
   private handleLeftClick(mousePos: THREE.Vector2) {
@@ -278,6 +306,284 @@ export class GameEngine {
   private clearSelection() {
     this.selectedEntities.forEach(entity => entity.setSelected(false))
     this.selectedEntities.clear()
+  }
+
+  /**
+   * Handle keyboard shortcuts
+   */
+  private handleKeyDown(event: KeyboardEvent) {
+    // Building hotkeys
+    switch (event.key.toLowerCase()) {
+      case 'h':
+        this.enterPlacementMode('house' as BuildingType)
+        break
+      case 'b':
+        this.enterPlacementMode('barracks' as BuildingType)
+        break
+      case 'a':
+        this.enterPlacementMode('archery_range' as BuildingType)
+        break
+      case 's':
+        this.enterPlacementMode('stable' as BuildingType)
+        break
+      case 'm':
+        this.enterPlacementMode('market' as BuildingType)
+        break
+      case 'k':
+        this.enterPlacementMode('blacksmith' as BuildingType)
+        break
+      case 'escape':
+        this.cancelPlacement()
+        break
+    }
+  }
+
+  /**
+   * Enter building placement mode
+   */
+  private enterPlacementMode(buildingType: BuildingType) {
+    // Check if player has enough resources
+    const buildingConfig = BUILDING_TYPES[buildingType.toUpperCase() as keyof typeof BUILDING_TYPES]
+    if (!this.canAffordBuilding(buildingConfig.cost)) {
+      console.warn(`Not enough resources to build ${buildingConfig.name}`)
+      return
+    }
+
+    this.placementMode = buildingType
+
+    // Create ghost preview
+    if (this.buildingGhost) {
+      this.buildingGhost.dispose()
+    }
+
+    this.buildingGhost = new BuildingPlacement(this.scene, buildingType)
+
+    console.log(`🏗️  Building placement mode: ${buildingConfig.name} (Press ESC to cancel)`)
+  }
+
+  /**
+   * Cancel building placement
+   */
+  private cancelPlacement() {
+    this.placementMode = null
+
+    if (this.buildingGhost) {
+      this.buildingGhost.dispose()
+      this.buildingGhost = null
+    }
+
+    this.ghostPosition = null
+    console.log('❌ Building placement cancelled')
+  }
+
+  /**
+   * Update building ghost position based on mouse
+   */
+  private updateBuildingGhost(mousePos: THREE.Vector2) {
+    if (!this.buildingGhost || !this.terrain) return
+
+    this.raycaster.setFromCamera(mousePos, this.camera)
+    const intersects = this.raycaster.intersectObject(this.terrain)
+
+    if (intersects.length > 0) {
+      const point = intersects[0].point
+      this.ghostPosition = point.clone()
+
+      // Snap to grid (optional, makes placement cleaner)
+      const gridSize = 1
+      this.ghostPosition.x = Math.round(point.x / gridSize) * gridSize
+      this.ghostPosition.z = Math.round(point.z / gridSize) * gridSize
+      this.ghostPosition.y = 0
+
+      // Check if placement is valid
+      const isValid = this.validateBuildingPlacement(
+        this.ghostPosition,
+        this.placementMode!
+      )
+
+      // Update ghost visual
+      this.buildingGhost.updatePosition(
+        { x: this.ghostPosition.x, y: 0, z: this.ghostPosition.z },
+        isValid
+      )
+    }
+  }
+
+  /**
+   * Validate building placement
+   */
+  private validateBuildingPlacement(position: THREE.Vector3, buildingType: BuildingType): boolean {
+    const buildingConfig = BUILDING_TYPES[buildingType.toUpperCase() as keyof typeof BUILDING_TYPES]
+    const size = buildingConfig.size
+
+    // Check map bounds
+    const halfWidth = size.width / 2
+    const mapBounds = 50
+    if (
+      Math.abs(position.x) + halfWidth > mapBounds ||
+      Math.abs(position.z) + halfWidth > mapBounds
+    ) {
+      return false
+    }
+
+    // Check collision with existing buildings
+    for (const building of this.buildings.values()) {
+      const dx = Math.abs(position.x - building.position.x)
+      const dz = Math.abs(position.z - building.position.z)
+      const minDist = (size.width + building.size.width) / 2 + 0.5 // 0.5 spacing
+
+      if (dx < minDist && dz < minDist) {
+        return false
+      }
+    }
+
+    // Check collision with resources
+    for (const resource of this.resources.values()) {
+      if (!resource.mesh) continue
+
+      const dx = Math.abs(position.x - resource.position.x)
+      const dz = Math.abs(position.z - resource.position.z)
+      const minDist = size.width / 2 + 2 // 2 unit spacing from resources
+
+      if (dx < minDist && dz < minDist) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  /**
+   * Handle building placement click
+   */
+  private handleBuildingPlacement(mousePos: THREE.Vector2) {
+    if (!this.placementMode || !this.ghostPosition) return
+
+    const buildingType = this.placementMode
+    const position = this.ghostPosition.clone()
+
+    // Validate placement
+    if (!this.validateBuildingPlacement(position, buildingType)) {
+      console.warn('❌ Invalid building placement')
+      return
+    }
+
+    // Check resources
+    const buildingConfig = BUILDING_TYPES[buildingType.toUpperCase() as keyof typeof BUILDING_TYPES]
+    if (!this.canAffordBuilding(buildingConfig.cost)) {
+      console.warn('❌ Not enough resources')
+      return
+    }
+
+    // Deduct resources
+    this.deductBuildingCost(buildingConfig.cost)
+
+    // Create building (not complete yet, needs construction)
+    const buildingId = `building_${buildingType}_${Date.now()}`
+    const building = new Building(
+      buildingId,
+      buildingType,
+      { x: position.x, y: 0, z: position.z },
+      'player1',
+      '#FF0000'
+    )
+
+    this.buildings.set(buildingId, building)
+    building.render(this.scene)
+
+    // Add as obstacle to pathfinding
+    this.navigationGrid.addRectObstacle(
+      { x: position.x, y: 0, z: position.z },
+      buildingConfig.size.width,
+      buildingConfig.size.height
+    )
+
+    // Assign villagers to construct (if any selected)
+    const selectedVillagers = Array.from(this.selectedEntities).filter(
+      (e): e is Unit => e instanceof Unit && e.type === 'villager'
+    )
+
+    if (selectedVillagers.length > 0) {
+      selectedVillagers.forEach(villager => {
+        villager.targetBuilding = building
+        villager.state = UnitState.Moving
+        villager.moveTo({ x: position.x, y: 0, z: position.z })
+      })
+      console.log(`👷 ${selectedVillagers.length} villager(s) assigned to construct ${buildingConfig.name}`)
+    }
+
+    console.log(`🏗️  Placed ${buildingConfig.name} at (${position.x.toFixed(1)}, ${position.z.toFixed(1)})`)
+
+    // Exit placement mode
+    this.cancelPlacement()
+  }
+
+  /**
+   * Check if player can afford building
+   */
+  private canAffordBuilding(cost: Record<string, number>): boolean {
+    if (cost.food && this.playerResources.food < cost.food) return false
+    if (cost.wood && this.playerResources.wood < cost.wood) return false
+    if (cost.gold && this.playerResources.gold < cost.gold) return false
+    if (cost.stone && this.playerResources.stone < cost.stone) return false
+    return true
+  }
+
+  /**
+   * Deduct building cost from player resources
+   */
+  private deductBuildingCost(cost: Record<string, number>) {
+    if (cost.food) this.playerResources.food -= cost.food
+    if (cost.wood) this.playerResources.wood -= cost.wood
+    if (cost.gold) this.playerResources.gold -= cost.gold
+    if (cost.stone) this.playerResources.stone -= cost.stone
+
+    // Trigger resource update callback
+    if (this.onResourcesUpdate) {
+      this.onResourcesUpdate(this.playerResources)
+    }
+  }
+
+  /**
+   * Handle villager construction of buildings
+   */
+  private handleVillagerConstruction(villager: Unit, deltaTime: number) {
+    const building = villager.targetBuilding
+    if (!building || building.isComplete) {
+      villager.state = UnitState.Idle
+      villager.targetBuilding = null
+      return
+    }
+
+    // Check if villager is near the building
+    const distance = villager.position.distanceTo(building.position)
+    if (distance > 3) {
+      // Move to building if not close enough
+      if (!villager.isMoving) {
+        villager.state = UnitState.Moving
+        villager.moveTo({
+          x: building.position.x,
+          y: 0,
+          z: building.position.z
+        })
+      }
+      return
+    }
+
+    // Villager is in range, build
+    villager.buildTimer += deltaTime
+
+    if (villager.buildTimer >= 1) { // Apply build progress every second
+      const progress = building.buildProgress + villager.buildRate
+      building.updateBuildProgress(progress)
+      villager.buildTimer = 0
+
+      if (building.isComplete) {
+        console.log(`✅ ${building.name} construction complete!`)
+        villager.state = UnitState.Idle
+        villager.targetBuilding = null
+      }
+    }
   }
 
   private initScene() {
@@ -464,11 +770,16 @@ export class GameEngine {
       unit.update(deltaTime)
 
       // Check if unit should deposit resources
-      if (unit.state === 'depositing' && unit.targetDepositBuilding) {
+      if (unit.state === UnitState.Depositing && unit.targetDepositBuilding) {
         const deposited = unit.depositResources()
         if (deposited) {
           this.addPlayerResources(deposited.type, deposited.amount)
         }
+      }
+
+      // Check if unit should build
+      if (unit.state === UnitState.Building && unit.targetBuilding) {
+        this.handleVillagerConstruction(unit, deltaTime)
       }
     })
     this.buildings.forEach(building => building.update(deltaTime))
