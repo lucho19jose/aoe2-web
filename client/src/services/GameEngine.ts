@@ -5,7 +5,7 @@ import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
-import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
+import { GAME_CONFIG, RESOURCE_SPAWN, UNIT_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import { Formation, FormationType } from '@/utils/Formation'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
@@ -567,6 +567,90 @@ export class GameEngine {
     return building
   }
 
+  /**
+   * Spawn a unit from a building's production
+   */
+  private spawnUnitFromBuilding(building: Building, unitType: UnitType) {
+    // Generate unique unit ID
+    const unitId = `unit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    // Calculate spawn position (near building)
+    const spawnOffset = building.size.width + 1
+    const angle = Math.random() * Math.PI * 2
+    const spawnPosition = {
+      x: building.position.x + Math.cos(angle) * spawnOffset,
+      y: 0,
+      z: building.position.z + Math.sin(angle) * spawnOffset
+    }
+
+    // Get building owner color
+    const ownerColor = this.getPlayerColor(building.ownerId)
+
+    // Create the unit
+    const unit = this.createUnit(unitId, unitType, spawnPosition, building.ownerId, ownerColor)
+
+    console.log(`🎖️ Spawned ${unitType} from ${building.name} at position (${spawnPosition.x.toFixed(1)}, ${spawnPosition.z.toFixed(1)})`)
+
+    return unit
+  }
+
+  /**
+   * Train a unit in a building
+   */
+  public trainUnit(buildingId: string, unitType: UnitType): boolean {
+    const building = this.buildings.get(buildingId)
+    if (!building) {
+      console.error(`Building ${buildingId} not found`)
+      return false
+    }
+
+    // Check and deduct resources
+    const unitConfig = UNIT_TYPES[unitType.toUpperCase() as keyof typeof UNIT_TYPES]
+    if (!unitConfig || !unitConfig.cost) {
+      console.error(`Unit ${unitType} has no cost configuration`)
+      return false
+    }
+
+    // Check if player has enough resources
+    const cost = unitConfig.cost
+    for (const [resource, amount] of Object.entries(cost)) {
+      const resourceKey = resource as keyof Resources
+      if (this.playerResources[resourceKey] < amount) {
+        console.warn(`Not enough ${resource}: need ${amount}, have ${this.playerResources[resourceKey]}`)
+        return false
+      }
+    }
+
+    // Attempt to train
+    const success = building.trainUnit(unitType)
+
+    if (success) {
+      // Deduct resources
+      for (const [resource, amount] of Object.entries(cost)) {
+        const resourceKey = resource as keyof Resources
+        this.playerResources[resourceKey] -= amount
+      }
+
+      // Notify resource update
+      if (this.onResourcesUpdate) {
+        this.onResourcesUpdate(this.playerResources)
+      }
+    }
+
+    return success
+  }
+
+  /**
+   * Get player color by player ID
+   */
+  private getPlayerColor(playerId: string): string {
+    // Simple color mapping - can be improved
+    if (playerId === this.playerId) {
+      return '#0000FF' // Blue for player
+    }
+    return '#FF0000' // Red for AI/enemies
+  }
+
   private onWindowResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
@@ -625,8 +709,18 @@ export class GameEngine {
       }
     })
 
-    // Update buildings and resources
-    this.buildings.forEach(building => building.update(deltaTime))
+    // Update buildings and check for completed units
+    this.buildings.forEach(building => {
+      building.update(deltaTime)
+
+      // Check if a unit was completed
+      const completedUnit = building.getCompletedUnit()
+      if (completedUnit) {
+        // Spawn the unit near the building
+        this.spawnUnitFromBuilding(building, completedUnit)
+      }
+    })
+
     this.resources.forEach(resource => resource.update(deltaTime))
 
     // Update controls
