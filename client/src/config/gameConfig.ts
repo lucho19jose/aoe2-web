@@ -53,6 +53,23 @@ export const GAME_CONFIG = {
   },
 
   ATTACK_SPEED: 2, // Attacks per second
+
+  // Victory conditions
+  VICTORY: {
+    CONQUEST: {
+      enabled: true,
+      checkInterval: 5, // seconds
+    },
+    POPULATION: {
+      enabled: true,
+      target: 200, // Alcanzar 200 población para ganar
+      checkInterval: 10, // seconds
+    },
+    TIME_LIMIT: {
+      enabled: false,
+      minutes: 60, // 60 minutos límite
+    },
+  },
 }
 
 export const COLORS = {

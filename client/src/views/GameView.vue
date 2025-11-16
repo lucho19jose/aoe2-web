@@ -24,6 +24,12 @@
             <q-icon name="architecture" size="24px" />
             <span>{{ resources.stone }}</span>
           </div>
+          <div class="resource population">
+            <q-icon name="groups" size="24px" />
+            <span :class="{ 'population-warning': population.current >= population.max }">
+              {{ population.current }}/{{ population.max }}
+            </span>
+          </div>
         </div>
         <div class="game-time">{{ gameTime }}</div>
         <div class="formation-indicator">
@@ -89,6 +95,33 @@
         </q-card-section>
       </q-card>
     </q-dialog>
+
+    <!-- Victory/Defeat Dialog -->
+    <q-dialog v-model="showVictoryDialog" persistent>
+      <q-card style="min-width: 400px" :class="victoryState.result === 'victory' ? 'victory-card' : 'defeat-card'">
+        <q-card-section class="text-center">
+          <div class="text-h4 q-mb-md">
+            <q-icon
+              :name="victoryState.result === 'victory' ? 'emoji_events' : 'cancel'"
+              size="64px"
+              :color="victoryState.result === 'victory' ? 'yellow-8' : 'red-8'"
+            />
+          </div>
+          <div class="text-h5">
+            {{ victoryState.result === 'victory' ? '¡VICTORIA!' : victoryState.result === 'defeat' ? '¡DERROTA!' : '¡EMPATE!' }}
+          </div>
+        </q-card-section>
+        <q-card-section>
+          <div class="text-body1 text-center">{{ victoryState.message }}</div>
+          <div v-if="victoryState.condition" class="text-caption text-center q-mt-sm">
+            Condición: {{ getVictoryConditionName(victoryState.condition) }}
+          </div>
+        </q-card-section>
+        <q-card-section>
+          <q-btn label="Return to Menu" color="primary" class="full-width" @click="exitGame" />
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -100,7 +133,7 @@ import { GameEngine } from '@/services/GameEngine'
 import { FormationType } from '@/utils/Formation'
 import ProductionPanel from '@/components/ProductionPanel.vue'
 import ResearchPanel from '@/components/ResearchPanel.vue'
-import type { UnitType } from '@/types/game'
+import type { UnitType, VictoryState, VictoryCondition } from '@/types/game'
 import { getTechnologiesForBuilding } from '@/config/technologies'
 
 const router = useRouter()
@@ -109,12 +142,27 @@ const gameStore = useGameStore()
 const gameCanvas = ref<HTMLCanvasElement | null>(null)
 const minimapCanvas = ref<HTMLCanvasElement | null>(null)
 const showGameMenu = ref(false)
+const showVictoryDialog = ref(false)
 
 const resources = ref({
   food: 200,
   wood: 200,
   gold: 100,
   stone: 100
+})
+
+const population = ref({
+  current: 0,
+  max: 3
+})
+
+const victoryState = ref<VictoryState>({
+  isGameOver: false,
+  result: null,
+  condition: null,
+  winnerName: null,
+  message: '',
+  timestamp: 0
 })
 
 const gameTime = ref('00:00')
@@ -133,6 +181,19 @@ onMounted(() => {
     // Set resource update callback
     gameEngine.setOnResourcesUpdate((newResources) => {
       resources.value = { ...newResources }
+    })
+
+    // Set population update callback
+    gameEngine.setOnPopulationUpdate((current, max) => {
+      population.value = { current, max }
+    })
+
+    // Set victory state change callback
+    gameEngine.setOnVictoryStateChange((state) => {
+      victoryState.value = state
+      if (state.isGameOver) {
+        showVictoryDialog.value = true
+      }
     })
 
     // Setup keyboard shortcuts for formations
@@ -272,6 +333,17 @@ const exitGame = () => {
   gameEngine?.stop()
   router.push('/')
 }
+
+const getVictoryConditionName = (condition: VictoryCondition): string => {
+  const names: Record<VictoryCondition, string> = {
+    conquest: 'Conquista',
+    population: 'Población',
+    wonder: 'Maravilla',
+    time_limit: 'Límite de Tiempo',
+    relics: 'Reliquias'
+  }
+  return names[condition] || condition
+}
 </script>
 
 <style lang="scss" scoped>
@@ -392,5 +464,33 @@ const exitGame = () => {
   color: #888;
   text-align: center;
   padding-top: 2rem;
+}
+
+.population {
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+  padding-left: 0.75rem;
+}
+
+.population-warning {
+  color: #ff6b6b;
+  font-weight: bold;
+}
+
+.victory-card {
+  background: linear-gradient(135deg, #1a3a1a 0%, #2d5a2d 100%);
+  border: 3px solid #4caf50;
+
+  .q-card__section {
+    color: white;
+  }
+}
+
+.defeat-card {
+  background: linear-gradient(135deg, #3a1a1a 0%, #5a2d2d 100%);
+  border: 3px solid #f44336;
+
+  .q-card__section {
+    color: white;
+  }
 }
 </style>

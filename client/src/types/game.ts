@@ -91,3 +91,26 @@ export interface ResourceNode {
   harvestRate: number
   regenerates: boolean
 }
+
+export enum VictoryCondition {
+  Conquest = 'conquest',           // Destruir todos los enemigos
+  Population = 'population',       // Alcanzar población objetivo primero
+  Wonder = 'wonder',               // Construir y mantener una maravilla
+  TimeLimit = 'time_limit',        // Más puntos al terminar el tiempo
+  Relics = 'relics'                // Controlar todas las reliquias
+}
+
+export enum GameResult {
+  Victory = 'victory',
+  Defeat = 'defeat',
+  Draw = 'draw'
+}
+
+export interface VictoryState {
+  isGameOver: boolean
+  result: GameResult | null
+  condition: VictoryCondition | null
+  winnerName: string | null
+  message: string
+  timestamp: number
+}

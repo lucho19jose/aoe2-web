@@ -8,7 +8,7 @@ import { Entity } from '@/entities/Entity'
 import { GAME_CONFIG, RESOURCE_SPAWN, UNIT_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import { Formation, FormationType } from '@/utils/Formation'
-import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
+import type { UnitType, BuildingType, ResourceType, Resources, VictoryState, VictoryCondition, GameResult } from '@/types/game'
 import init, { AIManager, AIDifficulty } from '@/wasm/game_engine'
 import { WebSocketService } from './WebSocketService'
 import type { WebSocketMessage } from './WebSocketService'
@@ -73,6 +73,24 @@ export class GameEngine {
 
   // Research system
   private researchedTechnologies: Set<string> = new Set()
+
+  // Population tracking
+  private currentPopulation: number = 0
+  private maxPopulation: number = GAME_CONFIG.STARTING_POPULATION
+  private onPopulationUpdate?: (current: number, max: number) => void
+
+  // Victory system
+  private victoryState: VictoryState = {
+    isGameOver: false,
+    result: null,
+    condition: null,
+    winnerName: null,
+    message: '',
+    timestamp: 0
+  }
+  private onVictoryStateChange?: (state: VictoryState) => void
+  private lastVictoryCheck: number = 0
+  private gameStartTime: number = Date.now()
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement, gameId?: string) {
     this.canvas = canvas
@@ -798,6 +816,12 @@ export class GameEngine {
       }
     }
 
+    // Check population limit
+    if (this.currentPopulation >= this.maxPopulation) {
+      console.warn(`⚠️ Population limit reached! ${this.currentPopulation}/${this.maxPopulation}. Build more houses!`)
+      return false
+    }
+
     // Attempt to train
     const success = building.trainUnit(unitType)
 
@@ -1030,6 +1054,12 @@ export class GameEngine {
     // Update controls
     this.controls.update()
 
+    // Update population count
+    this.updatePopulation()
+
+    // Check victory conditions
+    this.checkVictoryConditions(timestamp)
+
     // Render scene
     this.renderer.render(this.scene, this.camera)
 
@@ -1087,18 +1117,14 @@ export class GameEngine {
       stone: this.playerResources.stone
     }
 
-    // Calculate population
-    const unitCount = Array.from(this.units.values()).filter(u => u.ownerId === this.playerId).length
-    const populationMax = 200 // TODO: calculate from houses
-
     return {
       units,
       buildings,
       resources,
       player_resources: aiResources,
       population: {
-        current: unitCount,
-        max: populationMax
+        current: this.currentPopulation,
+        max: this.maxPopulation
       }
     }
   }
@@ -1355,6 +1381,258 @@ export class GameEngine {
    */
   public getResearchedTechnologies(): Set<string> {
     return new Set(this.researchedTechnologies)
+  }
+
+  /**
+   * Set callback for population updates
+   */
+  public setOnPopulationUpdate(callback: (current: number, max: number) => void) {
+    this.onPopulationUpdate = callback
+  }
+
+  /**
+   * Set callback for victory state changes
+   */
+  public setOnVictoryStateChange(callback: (state: VictoryState) => void) {
+    this.onVictoryStateChange = callback
+  }
+
+  /**
+   * Calculate maximum population based on houses
+   */
+  private calculateMaxPopulation(): number {
+    const playerBuildings = Array.from(this.buildings.values()).filter(
+      b => b.ownerId === this.playerId && b.isComplete
+    )
+
+    // Base population from Town Center
+    let maxPop = GAME_CONFIG.STARTING_POPULATION
+
+    // Add population from each house
+    playerBuildings.forEach(building => {
+      if (building.type === 'house') {
+        maxPop += GAME_CONFIG.POPULATION_PER_HOUSE
+      }
+    })
+
+    // Cap at max population
+    return Math.min(maxPop, GAME_CONFIG.MAX_POPULATION)
+  }
+
+  /**
+   * Update population count
+   */
+  private updatePopulation() {
+    const playerUnits = Array.from(this.units.values()).filter(
+      u => u.ownerId === this.playerId
+    )
+
+    this.currentPopulation = playerUnits.length
+    this.maxPopulation = this.calculateMaxPopulation()
+
+    // Notify UI
+    if (this.onPopulationUpdate) {
+      this.onPopulationUpdate(this.currentPopulation, this.maxPopulation)
+    }
+  }
+
+  /**
+   * Check all victory conditions
+   */
+  private checkVictoryConditions(currentTime: number) {
+    // Don't check if game is already over
+    if (this.victoryState.isGameOver) return
+
+    // Check at intervals to avoid performance issues
+    const timeSinceLastCheck = (currentTime - this.lastVictoryCheck) / 1000
+    if (timeSinceLastCheck < GAME_CONFIG.VICTORY.CONQUEST.checkInterval) return
+
+    this.lastVictoryCheck = currentTime
+
+    // Check conquest victory (no enemies left)
+    if (GAME_CONFIG.VICTORY.CONQUEST.enabled) {
+      this.checkConquestVictory()
+    }
+
+    // Check population victory (reached max population)
+    if (GAME_CONFIG.VICTORY.POPULATION.enabled) {
+      this.checkPopulationVictory()
+    }
+
+    // Check time limit victory
+    if (GAME_CONFIG.VICTORY.TIME_LIMIT.enabled) {
+      this.checkTimeLimitVictory(currentTime)
+    }
+  }
+
+  /**
+   * Check conquest victory condition
+   */
+  private checkConquestVictory() {
+    const playerUnits = Array.from(this.units.values()).filter(u => u.ownerId === this.playerId)
+    const playerBuildings = Array.from(this.buildings.values()).filter(b => b.ownerId === this.playerId)
+
+    const enemyUnits = Array.from(this.units.values()).filter(u => u.ownerId !== this.playerId)
+    const enemyBuildings = Array.from(this.buildings.values()).filter(b => b.ownerId !== this.playerId)
+
+    // Player lost - no units or buildings left
+    if (playerUnits.length === 0 && playerBuildings.length === 0) {
+      this.setVictoryState({
+        isGameOver: true,
+        result: GameResult.Defeat,
+        condition: VictoryCondition.Conquest,
+        winnerName: 'Enemy',
+        message: '¡Derrota! Has perdido todas tus unidades y edificios.',
+        timestamp: Date.now()
+      })
+      return
+    }
+
+    // Check if player has no Town Center
+    const playerTownCenters = Array.from(this.buildings.values()).filter(
+      b => b.ownerId === this.playerId && b.type === 'town_center' && b.isComplete
+    )
+
+    if (playerTownCenters.length === 0 && playerBuildings.length > 0) {
+      // Warning: no town center
+      console.warn('⚠️ No Town Center remaining!')
+    }
+
+    // Player won - no enemies left
+    if (enemyUnits.length === 0 && enemyBuildings.length === 0) {
+      this.setVictoryState({
+        isGameOver: true,
+        result: GameResult.Victory,
+        condition: VictoryCondition.Conquest,
+        winnerName: 'You',
+        message: '¡Victoria! Has eliminado todos los enemigos.',
+        timestamp: Date.now()
+      })
+    }
+  }
+
+  /**
+   * Check population victory condition
+   */
+  private checkPopulationVictory() {
+    if (this.currentPopulation >= GAME_CONFIG.VICTORY.POPULATION.target) {
+      this.setVictoryState({
+        isGameOver: true,
+        result: GameResult.Victory,
+        condition: VictoryCondition.Population,
+        winnerName: 'You',
+        message: `¡Victoria! Has alcanzado ${GAME_CONFIG.VICTORY.POPULATION.target} de población.`,
+        timestamp: Date.now()
+      })
+    }
+  }
+
+  /**
+   * Check time limit victory condition
+   */
+  private checkTimeLimitVictory(currentTime: number) {
+    const gameTimeMinutes = (currentTime - this.gameStartTime) / 1000 / 60
+
+    if (gameTimeMinutes >= GAME_CONFIG.VICTORY.TIME_LIMIT.minutes) {
+      // Calculate score based on resources, units, and buildings
+      const playerScore = this.calculatePlayerScore()
+      const enemyScore = this.calculateEnemyScore()
+
+      let result: GameResult
+      let message: string
+
+      if (playerScore > enemyScore) {
+        result = GameResult.Victory
+        message = `¡Victoria por tiempo! Puntuación: ${playerScore} vs ${enemyScore}`
+      } else if (playerScore < enemyScore) {
+        result = GameResult.Defeat
+        message = `¡Derrota por tiempo! Puntuación: ${playerScore} vs ${enemyScore}`
+      } else {
+        result = GameResult.Draw
+        message = `¡Empate! Puntuación: ${playerScore} vs ${enemyScore}`
+      }
+
+      this.setVictoryState({
+        isGameOver: true,
+        result,
+        condition: VictoryCondition.TimeLimit,
+        winnerName: result === GameResult.Victory ? 'You' : 'Enemy',
+        message,
+        timestamp: Date.now()
+      })
+    }
+  }
+
+  /**
+   * Calculate player score
+   */
+  private calculatePlayerScore(): number {
+    const units = Array.from(this.units.values()).filter(u => u.ownerId === this.playerId)
+    const buildings = Array.from(this.buildings.values()).filter(b => b.ownerId === this.playerId)
+
+    const unitScore = units.length * 10
+    const buildingScore = buildings.length * 50
+    const resourceScore = (
+      this.playerResources.food +
+      this.playerResources.wood +
+      this.playerResources.gold * 2 +
+      this.playerResources.stone * 2
+    ) / 100
+
+    return unitScore + buildingScore + resourceScore
+  }
+
+  /**
+   * Calculate enemy score
+   */
+  private calculateEnemyScore(): number {
+    const units = Array.from(this.units.values()).filter(u => u.ownerId !== this.playerId)
+    const buildings = Array.from(this.buildings.values()).filter(b => b.ownerId !== this.playerId)
+
+    const unitScore = units.length * 10
+    const buildingScore = buildings.length * 50
+
+    return unitScore + buildingScore
+  }
+
+  /**
+   * Set victory state and notify listeners
+   */
+  private setVictoryState(state: VictoryState) {
+    this.victoryState = state
+
+    console.log(`🏆 Victory State Changed:`, state)
+
+    // Notify UI
+    if (this.onVictoryStateChange) {
+      this.onVictoryStateChange(state)
+    }
+
+    // Stop game if over
+    if (state.isGameOver) {
+      this.stop()
+    }
+  }
+
+  /**
+   * Get current victory state
+   */
+  public getVictoryState(): VictoryState {
+    return { ...this.victoryState }
+  }
+
+  /**
+   * Get current population
+   */
+  public getCurrentPopulation(): number {
+    return this.currentPopulation
+  }
+
+  /**
+   * Get max population
+   */
+  public getMaxPopulation(): number {
+    return this.maxPopulation
   }
 
   public start() {
