@@ -10,7 +10,7 @@ export default defineConfig({
       template: { transformAssetUrls }
     }),
     quasar({
-      sassVariables: 'src/styles/quasar-variables.sass'
+      sassVariables: path.resolve(__dirname, './src/styles/quasar-variables.sass')
     })
   ],
   resolve: {

@@ -103,26 +103,32 @@ export class Building extends Entity {
 
   public completeBuild() {
     this.isComplete = true
-    this.buildProgress = 1
+    this.buildProgress = 100
 
     if (this.mesh) {
       const material = (this.mesh as THREE.Mesh).material as THREE.MeshStandardMaterial
       material.transparent = false
       material.opacity = 1
     }
+
+    console.log(`✅ ${this.name} construction completed!`)
   }
 
   public updateBuildProgress(progress: number) {
-    this.buildProgress = Math.min(1, Math.max(0, progress))
+    this.buildProgress = Math.min(100, Math.max(0, progress))
 
     if (this.mesh) {
       const material = (this.mesh as THREE.Mesh).material as THREE.MeshStandardMaterial
-      material.opacity = 0.5 + (this.buildProgress * 0.5)
+      material.opacity = 0.5 + ((this.buildProgress / 100) * 0.5)
     }
 
-    if (this.buildProgress >= 1) {
+    if (this.buildProgress >= 100) {
       this.completeBuild()
     }
+  }
+
+  public addBuildProgress(amount: number) {
+    this.updateBuildProgress(this.buildProgress + amount)
   }
 
   public takeDamage(damage: number) {

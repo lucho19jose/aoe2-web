@@ -37,6 +37,11 @@ export class GameEngine {
   }
   private onResourcesUpdate?: (resources: Resources) => void
 
+  // Building mode
+  private buildMode = false
+  private buildingToBuild: BuildingType | null = null
+  private buildingPreview: THREE.Mesh | null = null
+
   // Pathfinding
   private navigationGrid: HybridNavigationGrid
 
@@ -100,24 +105,43 @@ export class GameEngine {
   }
 
   private setupInputHandlers() {
-    // Left click - select units/buildings
+    // Left click - select units/buildings or place building
     this.inputHandler.on('leftclick', (event) => {
-      this.handleLeftClick(event.position)
+      if (this.buildMode) {
+        this.handleBuildingPlacement(event.position)
+      } else {
+        this.handleLeftClick(event.position)
+      }
     })
 
-    // Right click - move command
+    // Right click - move command or cancel build mode
     this.inputHandler.on('rightclick', (event) => {
-      this.handleRightClick(event.position)
+      if (this.buildMode) {
+        this.cancelBuildMode()
+      } else {
+        this.handleRightClick(event.position)
+      }
     })
 
     // Drag - box selection
     this.inputHandler.on('dragend', (event) => {
-      this.handleDragSelect(event.start, event.end)
+      if (!this.buildMode) {
+        this.handleDragSelect(event.start, event.end)
+      }
     })
 
     // Drag visual feedback
     this.inputHandler.on('drag', (event) => {
-      this.updateSelectionBox(event.start, event.current)
+      if (!this.buildMode) {
+        this.updateSelectionBox(event.start, event.current)
+      }
+    })
+
+    // Keyboard shortcuts
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        this.cancelBuildMode()
+      }
     })
   }
 
@@ -314,7 +338,8 @@ export class GameEngine {
     this.createUnit('unit3', 'villager' as UnitType, { x: -2, y: 0, z: 0 }, 'player1', '#FF0000')
 
     // Add Town Center for resource deposit
-    this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
+    const townCenter = this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
+    townCenter.completeBuild() // Start with completed town center
 
     // Spawn resources procedurally
     this.spawnResources()
@@ -440,7 +465,7 @@ export class GameEngine {
     const building = new Building(id, type, position, ownerId, color)
     this.buildings.set(id, building)
     building.render(this.scene)
-    building.completeBuild() // Auto-complete for now
+    // Don't auto-complete anymore - buildings start at 0% and need to be built
     return building
   }
 
@@ -603,6 +628,124 @@ export class GameEngine {
 
   public getSelectedEntities(): Entity[] {
     return Array.from(this.selectedEntities)
+  }
+
+  /**
+   * Enter build mode to construct a building
+   */
+  public enterBuildMode(buildingType: BuildingType) {
+    // Check if player has selected villagers
+    const hasVillager = Array.from(this.selectedEntities).some(
+      e => e instanceof Unit && e.type === 'villager'
+    )
+
+    if (!hasVillager) {
+      console.warn('Need to select a villager to build')
+      return
+    }
+
+    // Check if player can afford the building
+    const buildingConfig = BUILDING_TYPES[buildingType.toUpperCase() as keyof typeof BUILDING_TYPES]
+    if (!this.canAfford(buildingConfig.cost)) {
+      console.warn('Not enough resources to build', buildingType)
+      return
+    }
+
+    this.buildMode = true
+    this.buildingToBuild = buildingType
+    console.log(`🔨 Build mode activated: ${buildingConfig.name}`)
+  }
+
+  /**
+   * Cancel build mode
+   */
+  public cancelBuildMode() {
+    this.buildMode = false
+    this.buildingToBuild = null
+    if (this.buildingPreview) {
+      this.scene.remove(this.buildingPreview)
+      this.buildingPreview = null
+    }
+    console.log('Build mode cancelled')
+  }
+
+  /**
+   * Handle building placement
+   */
+  private handleBuildingPlacement(mousePos: THREE.Vector2) {
+    if (!this.buildingToBuild || !this.terrain) return
+
+    this.raycaster.setFromCamera(mousePos, this.camera)
+    const intersects = this.raycaster.intersectObject(this.terrain)
+
+    if (intersects.length > 0 && intersects[0].point) {
+      const point = intersects[0].point
+
+      // Create building foundation
+      const buildingId = `building_${this.buildingToBuild}_${Date.now()}`
+      const buildingConfig = BUILDING_TYPES[this.buildingToBuild.toUpperCase() as keyof typeof BUILDING_TYPES]
+
+      // Deduct resources
+      if (!this.deductResources(buildingConfig.cost)) {
+        console.warn('Not enough resources!')
+        return
+      }
+
+      const building = this.createBuilding(
+        buildingId,
+        this.buildingToBuild,
+        { x: point.x, y: 0, z: point.z },
+        'player1',
+        '#FF0000'
+      )
+
+      // Don't auto-complete
+      building.buildProgress = 0
+      building.isComplete = false
+      building.updateBuildProgress(0)
+
+      // Send selected villagers to build
+      this.selectedEntities.forEach(entity => {
+        if (entity instanceof Unit && entity.type === 'villager') {
+          entity.startBuilding(building)
+        }
+      })
+
+      console.log(`🏗️ Started building ${buildingConfig.name} at (${Math.floor(point.x)}, ${Math.floor(point.z)})`)
+
+      // Exit build mode
+      this.cancelBuildMode()
+    }
+  }
+
+  /**
+   * Check if player can afford a cost
+   */
+  private canAfford(cost: any): boolean {
+    if (cost.food && this.playerResources.food < cost.food) return false
+    if (cost.wood && this.playerResources.wood < cost.wood) return false
+    if (cost.gold && this.playerResources.gold < cost.gold) return false
+    if (cost.stone && this.playerResources.stone < cost.stone) return false
+    return true
+  }
+
+  /**
+   * Deduct resources from player
+   */
+  private deductResources(cost: any): boolean {
+    if (!this.canAfford(cost)) return false
+
+    if (cost.food) this.playerResources.food -= cost.food
+    if (cost.wood) this.playerResources.wood -= cost.wood
+    if (cost.gold) this.playerResources.gold -= cost.gold
+    if (cost.stone) this.playerResources.stone -= cost.stone
+
+    // Trigger callback
+    if (this.onResourcesUpdate) {
+      this.onResourcesUpdate(this.playerResources)
+    }
+
+    return true
   }
 
   public start() {

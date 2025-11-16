@@ -41,6 +41,10 @@ export class Unit extends Entity {
   public harvestTimer = 0
   public harvestInterval = 1 // seconds between harvests
 
+  // Building
+  public targetBuilding: Building | null = null
+  public buildTimer = 0
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
@@ -254,6 +258,57 @@ export class Unit extends Entity {
   }
 
   /**
+   * Start building a structure
+   */
+  public startBuilding(building: Building) {
+    if (this.type !== 'villager') {
+      console.warn('Only villagers can build')
+      return
+    }
+
+    this.stopHarvesting()
+    this.targetBuilding = building
+    this.state = UnitState.Moving
+
+    // Move to building
+    this.moveTo({
+      x: building.position.x,
+      y: 0,
+      z: building.position.z
+    })
+  }
+
+  /**
+   * Perform building action
+   */
+  private performBuilding(deltaTime: number) {
+    if (!this.targetBuilding) {
+      this.stopBuilding()
+      return
+    }
+
+    // Build progress (1% per second by default)
+    const buildRate = 1 // percent per second
+    this.targetBuilding.addBuildProgress(buildRate * deltaTime)
+
+    if (this.targetBuilding.buildProgress >= 100) {
+      // Building complete
+      this.targetBuilding.completeBuild()
+      this.stopBuilding()
+    }
+  }
+
+  /**
+   * Stop building
+   */
+  public stopBuilding() {
+    this.targetBuilding = null
+    this.buildTimer = 0
+    this.state = UnitState.Idle
+    this.stop()
+  }
+
+  /**
    * Check if unit is near target position
    */
   public isNearPosition(position: THREE.Vector3, threshold: number = 2): boolean {
@@ -374,7 +429,7 @@ export class Unit extends Entity {
       }
     }
 
-    // Handle harvesting state machine
+    // Handle harvesting and building state machine
     switch (this.state) {
       case UnitState.Harvesting:
         this.performHarvest(deltaTime)
@@ -382,6 +437,10 @@ export class Unit extends Entity {
 
       case UnitState.Depositing:
         // Deposit is handled by GameEngine when unit reaches building
+        break
+
+      case UnitState.Building:
+        this.performBuilding(deltaTime)
         break
     }
 
@@ -406,6 +465,11 @@ export class Unit extends Entity {
       if (this.isNearPosition(this.targetDepositBuilding.position, 3)) {
         this.state = UnitState.Depositing
         // Deposit will be triggered by GameEngine
+      }
+    } else if (this.state === UnitState.Moving && this.targetBuilding) {
+      // Reached building site, start building
+      if (this.isNearPosition(this.targetBuilding.position, 3)) {
+        this.state = UnitState.Building
       }
     }
   }
