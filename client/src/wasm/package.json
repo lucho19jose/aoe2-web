@@ -1,0 +1,19 @@
+{
+  "name": "game-engine",
+  "type": "module",
+  "collaborators": [
+    "AoE2 Web Team"
+  ],
+  "description": "WebAssembly game engine for AoE2 Web - pathfinding and AI",
+  "version": "0.1.0",
+  "files": [
+    "game_engine_bg.wasm",
+    "game_engine.js",
+    "game_engine.d.ts"
+  ],
+  "main": "game_engine.js",
+  "types": "game_engine.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

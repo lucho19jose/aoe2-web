@@ -5,7 +5,7 @@ import { Unit } from '@/entities/Unit'
 import { Building } from '@/entities/Building'
 import { Entity } from '@/entities/Entity'
 import { GAME_CONFIG } from '@/config/gameConfig'
-import { NavigationGrid } from '@/pathfinding/NavigationGrid'
+import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import type { UnitType, BuildingType } from '@/types/game'
 
 export class GameEngine {
@@ -27,7 +27,7 @@ export class GameEngine {
   private selectedEntities: Set<Entity> = new Set()
 
   // Pathfinding
-  private navigationGrid: NavigationGrid
+  private navigationGrid: HybridNavigationGrid
 
   // Raycaster for mouse picking
   private raycaster: THREE.Raycaster
@@ -74,8 +74,8 @@ export class GameEngine {
     // Setup raycaster
     this.raycaster = new THREE.Raycaster()
 
-    // Setup navigation grid (100x100 map)
-    this.navigationGrid = new NavigationGrid(100, 1)
+    // Setup navigation grid (100x100 map) - uses WASM when available
+    this.navigationGrid = new HybridNavigationGrid(100, 1)
 
     // Setup input handler
     this.inputHandler = new InputHandler(this.canvas)
