@@ -6,7 +6,8 @@ import { Building } from '@/entities/Building'
 import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
 import { BuildingPlacement } from '@/entities/BuildingPlacement'
-import { GAME_CONFIG, RESOURCE_SPAWN, BUILDING_TYPES } from '@/config/gameConfig'
+import { ParticleEmitter } from '@/effects/ParticleSystem'
+import { GAME_CONFIG, RESOURCE_SPAWN, BUILDING_TYPES, UNIT_TYPES } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
 import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 
@@ -52,12 +53,18 @@ export class GameEngine {
   private buildingGhost: BuildingPlacement | null = null
   private ghostPosition: THREE.Vector3 | null = null
 
+  // Particle system
+  private particleEmitter: ParticleEmitter
+
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
     this.minimapCanvas = minimapCanvas
 
     // Initialize Three.js scene
     this.scene = new THREE.Scene()
+
+    // Initialize particle system
+    this.particleEmitter = new ParticleEmitter(this.scene, 200)
     this.scene.background = new THREE.Color(0x87ceeb) // Sky blue
 
     // Setup camera
@@ -866,6 +873,17 @@ export class GameEngine {
 
   public createUnit(id: string, type: UnitType, position: {x: number, y: number, z: number}, ownerId: string, color: string) {
     const unit = new Unit(id, type, position, ownerId, color)
+
+    // Set up visual effects callbacks
+    unit.onAttack = (attacker, target) => {
+      this.particleEmitter.emitAttackEffect(attacker, target)
+    }
+
+    unit.onTakeDamage = (position, damage) => {
+      this.particleEmitter.emitImpactEffect(position)
+      this.particleEmitter.emitDamageNumber(position, damage)
+    }
+
     this.units.set(id, unit)
     unit.render(this.scene)
     return unit
@@ -924,11 +942,20 @@ export class GameEngine {
       const unit = this.units.get(unitId)
       if (unit) {
         console.log(`💀 ${unit.name} has been killed`)
+        // Emit death particles
+        this.particleEmitter.emitDeathEffect({
+          x: unit.position.x,
+          y: unit.position.y + 0.5,
+          z: unit.position.z
+        })
         unit.dispose()
         this.units.delete(unitId)
         this.selectedEntities.delete(unit)
       }
     })
+
+    // Update particle system
+    this.particleEmitter.update(deltaTime)
 
     // Update buildings and check for completed units
     this.buildings.forEach(building => {

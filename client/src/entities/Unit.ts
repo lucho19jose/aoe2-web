@@ -52,6 +52,10 @@ export class Unit extends Entity {
   public attackSpeed = 1.5 // attacks per second
   public range: number = 1.5 // attack range
 
+  // Visual effects callbacks
+  public onAttack?: (attacker: Position, target: Position) => void
+  public onTakeDamage?: (position: Position, damage: number) => void
+
   private selectionRing: THREE.Mesh | null = null
   private healthBar: THREE.Mesh | null = null
   private resourceIndicator: THREE.Mesh | null = null
@@ -354,6 +358,14 @@ export class Unit extends Entity {
       return false
     }
 
+    // Emit attack particles
+    if (this.onAttack) {
+      this.onAttack(
+        { x: this.position.x, y: this.position.y + 1, z: this.position.z },
+        { x: this.targetEnemy.position.x, y: this.targetEnemy.position.y + 1, z: this.targetEnemy.position.z }
+      )
+    }
+
     // Deal damage
     const isDead = this.targetEnemy.takeDamage(this.attack)
 
@@ -385,6 +397,15 @@ export class Unit extends Entity {
   public takeDamage(damage: number) {
     const actualDamage = Math.max(1, damage - this.defense)
     this.hp = Math.max(0, this.hp - actualDamage)
+
+    // Emit damage particles and number
+    if (this.onTakeDamage) {
+      this.onTakeDamage(
+        { x: this.position.x, y: this.position.y + 1, z: this.position.z },
+        actualDamage
+      )
+    }
+
     this.updateHealthBar()
     return this.hp <= 0
   }
