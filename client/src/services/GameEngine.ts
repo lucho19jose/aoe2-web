@@ -7,7 +7,7 @@ import { Resource } from '@/entities/Resource'
 import { Entity } from '@/entities/Entity'
 import { GAME_CONFIG, RESOURCE_SPAWN } from '@/config/gameConfig'
 import { HybridNavigationGrid } from '@/pathfinding/HybridNavigationGrid'
-import type { UnitType, BuildingType, ResourceType } from '@/types/game'
+import type { UnitType, BuildingType, ResourceType, Resources } from '@/types/game'
 
 export class GameEngine {
   private canvas: HTMLCanvasElement
@@ -27,6 +27,15 @@ export class GameEngine {
   private buildings: Map<string, Building> = new Map()
   private resources: Map<string, Resource> = new Map()
   private selectedEntities: Set<Entity> = new Set()
+
+  // Player resources
+  private playerResources: Resources = {
+    food: 200,
+    wood: 200,
+    gold: 100,
+    stone: 100
+  }
+  private onResourcesUpdate?: (resources: Resources) => void
 
   // Pathfinding
   private navigationGrid: HybridNavigationGrid
@@ -149,6 +158,36 @@ export class GameEngine {
 
     this.raycaster.setFromCamera(mousePos, this.camera)
 
+    // Check if clicked on a resource
+    const resourceObjects = Array.from(this.resources.values())
+      .map(r => r.mesh)
+      .filter(Boolean) as THREE.Object3D[]
+
+    const resourceIntersects = this.raycaster.intersectObjects(resourceObjects, true)
+
+    if (resourceIntersects.length > 0) {
+      // Clicked on a resource - start harvesting
+      const clicked = resourceIntersects[0].object
+      const resourceId = clicked.userData.entityId
+      const resource = this.resources.get(resourceId)
+
+      if (resource && resource.isAvailable()) {
+        // Find nearest deposit building (town center for now)
+        const depositBuilding = Array.from(this.buildings.values()).find(
+          b => b.type === 'town_center'
+        )
+
+        if (depositBuilding) {
+          this.selectedEntities.forEach(entity => {
+            if (entity instanceof Unit && entity.type === 'villager') {
+              entity.harvestResource(resource, depositBuilding)
+            }
+          })
+        }
+      }
+      return
+    }
+
     // Check if clicked on terrain
     if (this.terrain) {
       const intersects = this.raycaster.intersectObject(this.terrain)
@@ -158,6 +197,9 @@ export class GameEngine {
         // Move selected units using pathfinding
         this.selectedEntities.forEach(entity => {
           if (entity instanceof Unit) {
+            // Stop harvesting if currently harvesting
+            entity.stopHarvesting()
+
             // Find path from unit's current position to target
             const startPos = { x: entity.position.x, y: 0, z: entity.position.z }
             const goalPos = { x: point.x, y: 0, z: point.z }
@@ -266,13 +308,13 @@ export class GameEngine {
     this.terrain.receiveShadow = true
     this.scene.add(this.terrain)
 
-    // Add some test units
+    // Add some test units (villagers for harvesting)
     this.createUnit('unit1', 'villager' as UnitType, { x: 0, y: 0, z: 0 }, 'player1', '#FF0000')
-    this.createUnit('unit2', 'militia' as UnitType, { x: 5, y: 0, z: 5 }, 'player1', '#FF0000')
-    this.createUnit('unit3', 'archer' as UnitType, { x: -5, y: 0, z: -5 }, 'player1', '#FF0000')
+    this.createUnit('unit2', 'villager' as UnitType, { x: 2, y: 0, z: 0 }, 'player1', '#FF0000')
+    this.createUnit('unit3', 'villager' as UnitType, { x: -2, y: 0, z: 0 }, 'player1', '#FF0000')
 
-    // Add a test building
-    this.createBuilding('building1', 'house' as BuildingType, { x: 10, y: 0, z: 0 }, 'player1', '#FF0000')
+    // Add Town Center for resource deposit
+    this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
 
     // Spawn resources procedurally
     this.spawnResources()
@@ -418,7 +460,17 @@ export class GameEngine {
     this.lastFrameTime = timestamp
 
     // Update all entities
-    this.units.forEach(unit => unit.update(deltaTime))
+    this.units.forEach(unit => {
+      unit.update(deltaTime)
+
+      // Check if unit should deposit resources
+      if (unit.state === 'depositing' && unit.targetDepositBuilding) {
+        const deposited = unit.depositResources()
+        if (deposited) {
+          this.addPlayerResources(deposited.type, deposited.amount)
+        }
+      }
+    })
     this.buildings.forEach(building => building.update(deltaTime))
     this.resources.forEach(resource => resource.update(deltaTime))
 
@@ -499,6 +551,54 @@ export class GameEngine {
     ctx.beginPath()
     ctx.arc(camX, camZ, 8, 0, Math.PI * 2)
     ctx.stroke()
+  }
+
+  /**
+   * Add resources to player
+   */
+  private addPlayerResources(resourceType: ResourceType, amount: number) {
+    switch (resourceType) {
+      case 'tree':
+        this.playerResources.wood += amount
+        break
+      case 'gold_mine':
+        this.playerResources.gold += amount
+        break
+      case 'stone_mine':
+        this.playerResources.stone += amount
+        break
+      case 'berry_bush':
+      case 'deer':
+      case 'fish':
+        this.playerResources.food += amount
+        break
+    }
+
+    // Trigger callback if set
+    if (this.onResourcesUpdate) {
+      this.onResourcesUpdate(this.playerResources)
+    }
+
+    console.log(`📦 +${amount} ${resourceType} | Resources:`, {
+      food: Math.floor(this.playerResources.food),
+      wood: Math.floor(this.playerResources.wood),
+      gold: Math.floor(this.playerResources.gold),
+      stone: Math.floor(this.playerResources.stone)
+    })
+  }
+
+  /**
+   * Get player resources
+   */
+  public getPlayerResources(): Resources {
+    return { ...this.playerResources }
+  }
+
+  /**
+   * Set callback for resource updates
+   */
+  public setOnResourcesUpdate(callback: (resources: Resources) => void) {
+    this.onResourcesUpdate = callback
   }
 
   public getSelectedEntities(): Entity[] {
