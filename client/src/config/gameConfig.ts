@@ -205,3 +205,95 @@ export const RESOURCE_TYPES = {
     gatherRate: 0.6,
   },
 }
+
+export const RESOURCE_NODES = {
+  TREE: {
+    name: 'Tree',
+    resourceType: 'wood',
+    amount: 125,
+    harvestRate: 0.5,
+    regenerates: false,
+    size: 1.5,
+    color: 0x228b22,
+    height: 4,
+  },
+  GOLD_MINE: {
+    name: 'Gold Mine',
+    resourceType: 'gold',
+    amount: 800,
+    harvestRate: 0.38,
+    regenerates: false,
+    size: 2,
+    color: 0xffd700,
+    height: 2.5,
+  },
+  STONE_MINE: {
+    name: 'Stone Mine',
+    resourceType: 'stone',
+    amount: 350,
+    harvestRate: 0.36,
+    regenerates: false,
+    size: 2,
+    color: 0x808080,
+    height: 2,
+  },
+  BERRY_BUSH: {
+    name: 'Berry Bush',
+    resourceType: 'food',
+    amount: 125,
+    harvestRate: 0.31,
+    regenerates: true,
+    regenerationTime: 120, // seconds
+    size: 1,
+    color: 0x9370db,
+    height: 1.5,
+  },
+  DEER: {
+    name: 'Deer',
+    resourceType: 'food',
+    amount: 140,
+    harvestRate: 0.41,
+    regenerates: false,
+    size: 1,
+    color: 0xd2691e,
+    height: 1.2,
+  },
+}
+
+export const RESOURCE_SPAWN = {
+  TREE: {
+    minClusters: 8,
+    maxClusters: 15,
+    minPerCluster: 5,
+    maxPerCluster: 12,
+    clusterRadius: 8,
+  },
+  GOLD_MINE: {
+    minClusters: 4,
+    maxClusters: 7,
+    minPerCluster: 4,
+    maxPerCluster: 7,
+    clusterRadius: 4,
+  },
+  STONE_MINE: {
+    minClusters: 3,
+    maxClusters: 6,
+    minPerCluster: 3,
+    maxPerCluster: 5,
+    clusterRadius: 4,
+  },
+  BERRY_BUSH: {
+    minClusters: 4,
+    maxClusters: 8,
+    minPerCluster: 4,
+    maxPerCluster: 6,
+    clusterRadius: 3,
+  },
+  DEER: {
+    minClusters: 3,
+    maxClusters: 6,
+    minPerCluster: 2,
+    maxPerCluster: 4,
+    clusterRadius: 5,
+  },
+}
