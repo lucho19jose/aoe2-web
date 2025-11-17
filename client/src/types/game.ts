@@ -46,7 +46,8 @@ export enum BuildingType {
   ArcheryRange = 'archery_range',
   Stable = 'stable',
   Market = 'market',
-  Blacksmith = 'blacksmith'
+  Blacksmith = 'blacksmith',
+  Wonder = 'wonder'
 }
 
 export interface Resources {
@@ -90,4 +91,39 @@ export interface ResourceNode {
   maxAmount: number
   harvestRate: number
   regenerates: boolean
+}
+
+export interface Relic {
+  id: string
+  position: Position
+  ownerId: string | null
+  isGarrisoned: boolean
+}
+
+export interface GameStatistics {
+  playerId: string
+  resourcesGathered: Resources
+  resourcesSpent: Resources
+  unitsTrainedByType: Record<string, number>
+  unitsKilledByType: Record<string, number>
+  unitsLostByType: Record<string, number>
+  buildingsBuilt: number
+  buildingsLost: number
+  technologiesResearched: number
+  gameTime: number
+}
+
+export enum VictoryCondition {
+  Conquest = 'conquest',
+  Wonder = 'wonder',
+  Relic = 'relic',
+  Score = 'score'
+}
+
+export interface VictoryState {
+  hasWon: boolean
+  hasLost: boolean
+  condition?: VictoryCondition
+  winnerId?: string
+  timestamp?: number
 }

@@ -18,7 +18,8 @@
     "@quasar/extras": "^1.16.9",
     "three": "^0.160.0",
     "@types/three": "^0.160.0",
-    "axios": "^1.6.5"
+    "axios": "^1.6.5",
+    "chart.js": "^4.4.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
