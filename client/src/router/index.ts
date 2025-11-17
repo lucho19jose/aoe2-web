@@ -13,6 +13,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/GameView.vue')
   },
   {
+    path: '/single-player',
+    name: 'single-player',
+    component: () => import('@/views/SinglePlayerLobby.vue')
+  },
+  {
     path: '/lobby',
     name: 'lobby',
     component: () => import('@/views/LobbyView.vue')

@@ -52,7 +52,7 @@ const router = useRouter()
 const $q = useQuasar()
 
 const startSinglePlayer = () => {
-  router.push('/game')
+  router.push('/single-player')
 }
 
 const goToLobby = () => {
