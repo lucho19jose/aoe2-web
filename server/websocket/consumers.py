@@ -37,15 +37,48 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def receive(self, text_data):
         """Handle incoming WebSocket messages"""
-        data = json.loads(text_data)
+        try:
+            data = json.loads(text_data)
+        except json.JSONDecodeError:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid JSON format'
+            }))
+            return
+
         message_type = data.get('type')
 
+        # Validate user is authenticated
+        if not self.scope.get('user') or not self.scope['user'].is_authenticated:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Authentication required'
+            }))
+            return
+
+        # Validate user is part of this game
+        is_player = await self.validate_player_in_game()
+        if not is_player:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'You are not a player in this game'
+            }))
+            return
+
+        # Route message to appropriate handler
         if message_type == 'unit_command':
             await self.handle_unit_command(data)
         elif message_type == 'build_command':
             await self.handle_build_command(data)
+        elif message_type == 'research_tech':
+            await self.handle_research_command(data)
         elif message_type == 'chat_message':
             await self.handle_chat_message(data)
+        else:
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': f'Unknown message type: {message_type}'
+            }))
 
     async def handle_unit_command(self, data):
         """Handle unit movement/action commands"""
@@ -92,12 +125,40 @@ class GameConsumer(AsyncWebsocketConsumer):
             'data': event['data']
         }))
 
+    async def handle_research_command(self, data):
+        """Handle technology research commands"""
+        await self.channel_layer.group_send(
+            self.game_group_name,
+            {
+                'type': 'research_update',
+                'data': data
+            }
+        )
+
+    async def research_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'research_update',
+            'data': event['data']
+        }))
+
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
             'type': 'chat_message',
             'username': event['username'],
             'message': event['message']
         }))
+
+    @database_sync_to_async
+    def validate_player_in_game(self):
+        """Check if the current user is a player in this game"""
+        try:
+            game = Game.objects.get(id=self.game_id)
+            user = self.scope.get('user')
+            if not user or not user.is_authenticated:
+                return False
+            return game.players.filter(user=user).exists()
+        except Game.DoesNotExist:
+            return False
 
     @database_sync_to_async
     def get_game_state(self):
