@@ -84,11 +84,20 @@
         </q-card-section>
         <q-card-section>
           <q-btn label="Resume" color="primary" class="full-width q-mb-sm" @click="showGameMenu = false" />
+          <q-btn label="Statistics" color="primary" class="full-width q-mb-sm" @click="showStatistics" />
           <q-btn label="Settings" color="primary" class="full-width q-mb-sm" @click="goToSettings" />
           <q-btn label="Exit to Menu" color="negative" class="full-width" @click="exitGame" />
         </q-card-section>
       </q-card>
     </q-dialog>
+
+    <!-- Game Statistics Modal -->
+    <game-statistics
+      :visible="showGameStatistics"
+      :victory-state="victoryState"
+      :statistics="playerStatistics"
+      @close="handleCloseStatistics"
+    />
   </div>
 </template>
 
@@ -100,7 +109,9 @@ import { GameEngine } from '@/services/GameEngine'
 import { FormationType } from '@/utils/Formation'
 import ProductionPanel from '@/components/ProductionPanel.vue'
 import ResearchPanel from '@/components/ResearchPanel.vue'
-import type { UnitType } from '@/types/game'
+import GameStatistics from '@/components/GameStatistics.vue'
+import type { UnitType, VictoryState } from '@/types/game'
+import type { PlayerStatistics } from '@/services/StatisticsService'
 import { getTechnologiesForBuilding } from '@/config/technologies'
 
 const router = useRouter()
@@ -109,6 +120,7 @@ const gameStore = useGameStore()
 const gameCanvas = ref<HTMLCanvasElement | null>(null)
 const minimapCanvas = ref<HTMLCanvasElement | null>(null)
 const showGameMenu = ref(false)
+const showGameStatistics = ref(false)
 
 const resources = ref({
   food: 200,
@@ -123,6 +135,35 @@ const selectedBuilding = ref<any>(null)
 const currentFormation = ref('Box')
 const researchedTechs = ref<Set<string>>(new Set())
 
+const victoryState = ref<VictoryState>({
+  hasWon: false,
+  hasLost: false
+})
+
+const playerStatistics = ref<PlayerStatistics>({
+  playerId: 'player1',
+  playerName: 'Player 1',
+  resourcesGathered: { food: 0, wood: 0, gold: 0, stone: 0 },
+  resourcesSpent: { food: 0, wood: 0, gold: 0, stone: 0 },
+  currentResources: { food: 200, wood: 200, gold: 100, stone: 100 },
+  unitsTrainedByType: {},
+  totalUnitsTrained: 0,
+  unitsKilledByType: {},
+  totalUnitsKilled: 0,
+  unitsLostByType: {},
+  totalUnitsLost: 0,
+  buildingsBuilt: 0,
+  buildingsDestroyed: 0,
+  buildingsLost: 0,
+  technologiesResearched: [],
+  damageDealt: 0,
+  damageTaken: 0,
+  militaryScore: 0,
+  economyScore: 0,
+  gameTime: 0,
+  startTime: Date.now()
+})
+
 let gameEngine: GameEngine | null = null
 let selectionUpdateInterval: number | null = null
 
@@ -133,6 +174,20 @@ onMounted(() => {
     // Set resource update callback
     gameEngine.setOnResourcesUpdate((newResources) => {
       resources.value = { ...newResources }
+    })
+
+    // Set victory/defeat callback
+    gameEngine.setOnVictoryStateChange((newVictoryState) => {
+      victoryState.value = newVictoryState
+
+      // Get current statistics
+      const stats = gameEngine?.getStatistics()
+      if (stats) {
+        playerStatistics.value = stats
+      }
+
+      // Show statistics modal
+      showGameStatistics.value = true
     })
 
     // Setup keyboard shortcuts for formations
@@ -261,6 +316,25 @@ const handleResearch = (techId: string) => {
 const handleCancelResearch = (index: number) => {
   console.log(`Cancelling research at index ${index}`)
   // TODO: Implement cancel research logic in GameEngine
+}
+
+const showStatistics = () => {
+  showGameMenu.value = false
+
+  // Get current statistics from game engine
+  if (gameEngine) {
+    const stats = gameEngine.getStatistics()
+    if (stats) {
+      playerStatistics.value = stats
+    }
+    victoryState.value = gameEngine.getVictoryState()
+  }
+
+  showGameStatistics.value = true
+}
+
+const handleCloseStatistics = () => {
+  showGameStatistics.value = false
 }
 
 const goToSettings = () => {

@@ -46,6 +46,7 @@ export class GameEngine {
     stone: 100
   }
   private onResourcesUpdate?: (resources: Resources) => void
+  private onVictoryStateChange?: (victoryState: VictoryState) => void
 
   // Pathfinding
   private navigationGrid: HybridNavigationGrid
@@ -1455,6 +1456,13 @@ export class GameEngine {
     this.onResourcesUpdate = callback
   }
 
+  /**
+   * Set callback for victory/defeat state changes
+   */
+  public setOnVictoryStateChange(callback: (victoryState: VictoryState) => void) {
+    this.onVictoryStateChange = callback
+  }
+
   public getSelectedEntities(): Entity[] {
     return Array.from(this.selectedEntities)
   }
@@ -1577,6 +1585,11 @@ export class GameEngine {
     // Show statistics
     console.log(this.statisticsService.generateSummary(this.playerId))
 
+    // Notify UI
+    if (this.onVictoryStateChange) {
+      this.onVictoryStateChange(this.victoryState)
+    }
+
     // Send to multiplayer server
     if (this.isMultiplayer && this.webSocket) {
       this.webSocket.send({
@@ -1612,6 +1625,11 @@ export class GameEngine {
 
     // Show statistics
     console.log(this.statisticsService.generateSummary(this.playerId))
+
+    // Notify UI
+    if (this.onVictoryStateChange) {
+      this.onVictoryStateChange(this.victoryState)
+    }
 
     // Send to multiplayer server
     if (this.isMultiplayer && this.webSocket) {
