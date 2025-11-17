@@ -1,0 +1,179 @@
+version: '3.8'
+
+# ==========================================
+# Production Environment
+# ==========================================
+# IMPORTANT: Before deploying to production:
+# 1. Create .env.production from .env.production.example
+# 2. Set strong passwords and SECRET_KEY
+# 3. Configure SSL certificates with Nginx
+# 4. Review all security settings
+# 5. Set up backups for database and media files
+#
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: aoe2_db_prod
+    env_file:
+      - .env.production
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aoe2_network
+    restart: always
+    # Security: Don't expose port in production (only internal access)
+    # ports:
+    #   - "5432:5432"
+
+  # Redis Cache & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: aoe2_redis_prod
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aoe2_network
+    restart: always
+    # Security: Don't expose port in production
+    # ports:
+    #   - "6379:6379"
+
+  # Django Backend
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: aoe2_backend_prod
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             daphne -b 0.0.0.0 -p 8000 core.asgi:application"
+    volumes:
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    env_file:
+      - .env.production
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aoe2_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Don't expose port directly - use Nginx reverse proxy
+    expose:
+      - "8000"
+
+  # Celery Worker
+  celery:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: aoe2_celery_prod
+    command: celery -A core worker -l warning --max-tasks-per-child=1000
+    env_file:
+      - .env.production
+    depends_on:
+      - db
+      - redis
+    networks:
+      - aoe2_network
+    restart: always
+    healthcheck:
+      test: celery -A core inspect ping
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Celery Beat (Scheduled Tasks)
+  celery-beat:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: aoe2_celery_beat_prod
+    command: celery -A core beat -l warning --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file:
+      - .env.production
+    depends_on:
+      - db
+      - redis
+    networks:
+      - aoe2_network
+    restart: always
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: aoe2_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - static_volume:/usr/share/nginx/html/static:ro
+      - media_volume:/usr/share/nginx/html/media:ro
+      - ./client/dist:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    networks:
+      - aoe2_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Build (one-time build, then serve via Nginx)
+  # Uncomment if you want to build frontend in Docker
+  # frontend-build:
+  #   build:
+  #     context: ./client
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     - ./client/dist:/app/dist
+  #   command: npm run build
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  media_volume:
+    driver: local
+
+networks:
+  aoe2_network:
+    driver: bridge
