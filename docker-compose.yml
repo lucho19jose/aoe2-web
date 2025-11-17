@@ -1,10 +1,16 @@
 version: '3.8'
 
+# ==========================================
+# Development Environment
+# ==========================================
+# This configuration is for LOCAL DEVELOPMENT ONLY
+# For production, use: docker-compose -f docker-compose.prod.yml up
+
 services:
   # PostgreSQL Database
   db:
     image: postgres:15-alpine
-    container_name: aoe2_db
+    container_name: aoe2_db_dev
     environment:
       POSTGRES_DB: aoe2_web
       POSTGRES_USER: postgres
@@ -18,11 +24,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - aoe2_network
 
   # Redis Cache & Message Broker
   redis:
     image: redis:7-alpine
-    container_name: aoe2_redis
+    container_name: aoe2_redis_dev
     ports:
       - "6379:6379"
     volumes:
@@ -32,13 +40,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - aoe2_network
 
   # Django Backend
   backend:
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: aoe2_backend
+    container_name: aoe2_backend_dev
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
@@ -49,89 +59,81 @@ services:
       - media_volume:/app/media
     ports:
       - "8000:8000"
-    environment:
-      - DEBUG=True
-      - SECRET_KEY=dev-secret-key-change-in-production
-      - DB_NAME=aoe2_web
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_HOST=db
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - ALLOWED_HOSTS=localhost,127.0.0.1,backend
-      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+    env_file:
+      - ./server/.env.development
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - aoe2_network
+    restart: unless-stopped
 
   # Celery Worker
   celery:
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: aoe2_celery
+    container_name: aoe2_celery_dev
     command: celery -A core worker -l info
     volumes:
       - ./server:/app
-    environment:
-      - DEBUG=True
-      - SECRET_KEY=dev-secret-key-change-in-production
-      - DB_NAME=aoe2_web
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_HOST=db
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+    env_file:
+      - ./server/.env.development
     depends_on:
       - db
       - redis
+    networks:
+      - aoe2_network
+    restart: unless-stopped
 
   # Celery Beat (Scheduled Tasks)
   celery-beat:
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: aoe2_celery_beat
+    container_name: aoe2_celery_beat_dev
     command: celery -A core beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     volumes:
       - ./server:/app
-    environment:
-      - DEBUG=True
-      - SECRET_KEY=dev-secret-key-change-in-production
-      - DB_NAME=aoe2_web
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_HOST=db
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+    env_file:
+      - ./server/.env.development
     depends_on:
       - db
       - redis
+    networks:
+      - aoe2_network
+    restart: unless-stopped
 
   # Vue Frontend (Development)
   frontend:
     build:
       context: ./client
       dockerfile: Dockerfile.dev
-    container_name: aoe2_frontend
-    command: npm run dev
+    container_name: aoe2_frontend_dev
+    command: npm run dev -- --host 0.0.0.0
     volumes:
       - ./client:/app
       - /app/node_modules
     ports:
       - "3000:3000"
+      - "5173:5173"
     environment:
       - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
     depends_on:
       - backend
+    networks:
+      - aoe2_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
   static_volume:
   media_volume:
+
+networks:
+  aoe2_network:
+    driver: bridge
