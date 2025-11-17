@@ -43,6 +43,8 @@ factory-boy==3.3.0
 black==23.12.1
 flake8==7.0.0
 mypy==1.8.0
+bandit==1.7.6
+safety==3.0.1
 
 # Production server
 gunicorn==21.2.0
