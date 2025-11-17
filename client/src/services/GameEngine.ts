@@ -79,6 +79,8 @@ export class GameEngine {
 
   // Research system
   private researchedTechnologies: Set<string> = new Set()
+  private unitStatModifiers?: Map<string, number>
+  private resourceRateModifiers?: Record<string, number>
 
   // Victory/Defeat system
   private victoryState: VictoryState = {
@@ -1000,21 +1002,102 @@ export class GameEngine {
     for (const effect of tech.effects) {
       switch (effect.type) {
         case 'unit_stat':
-          // In a real implementation, you would update unit stats
-          // For now, just log it
-          console.log(`  • ${effect.target} ${effect.stat} +${effect.value}`)
+          this.applyUnitStatModifier(effect.target!, effect.stat!, Number(effect.value))
+          console.log(`  ✅ ${effect.target} ${effect.stat} +${effect.value}`)
+          break
+        case 'building_stat':
+          this.applyBuildingStatModifier(effect.target!, effect.stat!, Number(effect.value))
+          console.log(`  ✅ ${effect.target} ${effect.stat} +${effect.value}`)
           break
         case 'resource_rate':
-          console.log(`  • ${effect.stat} rate ${effect.value}x`)
+          this.applyResourceRateModifier(effect.stat!, Number(effect.value))
+          console.log(`  ✅ ${effect.stat} rate +${effect.value}%`)
           break
         case 'unlock':
-          console.log(`  • Unlocked: ${effect.value}`)
+          // Unlock new units or buildings
+          console.log(`  ✅ Unlocked: ${effect.value}`)
+          // Could add to available units/buildings list
           break
       }
     }
 
     // Play research complete sound
     this.soundService.play(SoundType.RESEARCH_COMPLETE)
+  }
+
+  /**
+   * Apply stat modifier to all existing units of a type
+   */
+  private applyUnitStatModifier(unitType: string, stat: string, value: number) {
+    // Apply to all existing units
+    this.units.forEach(unit => {
+      if (unit.unitType.toLowerCase() === unitType.toLowerCase() && unit.ownerId === this.playerId) {
+        switch (stat) {
+          case 'attack':
+            unit.attack += value
+            break
+          case 'defense':
+          case 'armor':
+            unit.defense += value
+            break
+          case 'maxHealth':
+          case 'health':
+            unit.maxHealth += value
+            unit.health = Math.min(unit.health + value, unit.maxHealth)
+            break
+          case 'speed':
+            unit.speed += value
+            break
+          case 'range':
+            if ('range' in unit) {
+              (unit as any).range += value
+            }
+            break
+        }
+      }
+    })
+
+    // Store modifier to apply to future units
+    if (!this.unitStatModifiers) {
+      this.unitStatModifiers = new Map()
+    }
+    const modifierKey = `${unitType}:${stat}`
+    const currentModifier = this.unitStatModifiers.get(modifierKey) || 0
+    this.unitStatModifiers.set(modifierKey, currentModifier + value)
+  }
+
+  /**
+   * Apply stat modifier to buildings
+   */
+  private applyBuildingStatModifier(buildingType: string, stat: string, value: number) {
+    this.buildings.forEach(building => {
+      if (building.buildingType.toLowerCase() === buildingType.toLowerCase() &&
+          building.ownerId === this.playerId) {
+        switch (stat) {
+          case 'armor':
+          case 'defense':
+            building.defense += value
+            break
+          case 'health':
+          case 'maxHealth':
+            building.maxHealth += value
+            building.health = Math.min(building.health + value, building.maxHealth)
+            break
+        }
+      }
+    })
+  }
+
+  /**
+   * Apply resource gathering rate modifier
+   */
+  private applyResourceRateModifier(resourceType: string, percentIncrease: number) {
+    // Store the modifier to apply when gathering resources
+    if (!this.resourceRateModifiers) {
+      this.resourceRateModifiers = {}
+    }
+    const currentRate = this.resourceRateModifiers[resourceType] || 1.0
+    this.resourceRateModifiers[resourceType] = currentRate * (1 + percentIncrease / 100)
   }
 
   /**
@@ -1405,35 +1488,40 @@ export class GameEngine {
     switch (resourceType) {
       case 'tree':
         resourceKey = 'wood'
-        this.playerResources.wood += amount
         break
       case 'gold_mine':
         resourceKey = 'gold'
-        this.playerResources.gold += amount
         break
       case 'stone_mine':
         resourceKey = 'stone'
-        this.playerResources.stone += amount
         break
       case 'berry_bush':
       case 'deer':
       case 'fish':
         resourceKey = 'food'
-        this.playerResources.food += amount
         break
       default:
         return
     }
 
+    // Apply research bonuses to gathering rate
+    let finalAmount = amount
+    if (this.resourceRateModifiers && this.resourceRateModifiers[resourceKey]) {
+      finalAmount *= this.resourceRateModifiers[resourceKey]
+    }
+
+    // Add resources with bonus applied
+    this.playerResources[resourceKey] += finalAmount
+
     // Track statistics
-    this.statisticsService.recordResourceGathered(this.playerId, resourceKey, amount)
+    this.statisticsService.recordResourceGathered(this.playerId, resourceKey, finalAmount)
 
     // Trigger callback if set
     if (this.onResourcesUpdate) {
       this.onResourcesUpdate(this.playerResources)
     }
 
-    console.log(`📦 +${amount} ${resourceType} | Resources:`, {
+    console.log(`📦 +${finalAmount.toFixed(1)} ${resourceType} (${amount} base) | Resources:`, {
       food: Math.floor(this.playerResources.food),
       wood: Math.floor(this.playerResources.wood),
       gold: Math.floor(this.playerResources.gold),
