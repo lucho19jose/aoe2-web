@@ -84,8 +84,56 @@
         </q-card-section>
         <q-card-section>
           <q-btn label="Resume" color="primary" class="full-width q-mb-sm" @click="showGameMenu = false" />
+          <q-btn label="Statistics" color="info" class="full-width q-mb-sm" @click="openStatistics" />
           <q-btn label="Settings" color="primary" class="full-width q-mb-sm" @click="goToSettings" />
           <q-btn label="Exit to Menu" color="negative" class="full-width" @click="exitGame" />
+        </q-card-section>
+      </q-card>
+    </q-dialog>
+
+    <!-- Statistics Dialog -->
+    <q-dialog v-model="showStatistics" maximized>
+      <q-card>
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h5">Game Statistics</div>
+          <q-space />
+          <q-btn icon="close" flat round dense v-close-popup />
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          <game-statistics
+            v-if="gameEngine"
+            :player-id="currentPlayerId"
+            :show-dialog="showStatistics"
+            :is-victory="!gameEnded || victoryCondition !== null"
+          />
+        </q-card-section>
+      </q-card>
+    </q-dialog>
+
+    <!-- Victory/Defeat Modal -->
+    <q-dialog v-model="gameEnded" persistent>
+      <q-card style="min-width: 400px">
+        <q-card-section class="text-center">
+          <div class="text-h4 q-mb-md" :class="victoryCondition ? 'text-positive' : 'text-negative'">
+            {{ victoryCondition ? '🎉 Victory!' : '💀 Defeat' }}
+          </div>
+          <div v-if="victoryCondition" class="text-h6">
+            Victory by {{ victoryCondition }}
+          </div>
+        </q-card-section>
+        <q-card-section>
+          <q-btn
+            label="View Statistics"
+            color="primary"
+            class="full-width q-mb-sm"
+            @click="openStatistics"
+          />
+          <q-btn
+            label="Exit to Menu"
+            color="negative"
+            class="full-width"
+            @click="exitGame"
+          />
         </q-card-section>
       </q-card>
     </q-dialog>
@@ -100,6 +148,7 @@ import { GameEngine } from '@/services/GameEngine'
 import { FormationType } from '@/utils/Formation'
 import ProductionPanel from '@/components/ProductionPanel.vue'
 import ResearchPanel from '@/components/ResearchPanel.vue'
+import GameStatistics from '@/components/GameStatistics.vue'
 import type { UnitType } from '@/types/game'
 import { getTechnologiesForBuilding } from '@/config/technologies'
 
@@ -109,6 +158,9 @@ const gameStore = useGameStore()
 const gameCanvas = ref<HTMLCanvasElement | null>(null)
 const minimapCanvas = ref<HTMLCanvasElement | null>(null)
 const showGameMenu = ref(false)
+const showStatistics = ref(false)
+const gameEnded = ref(false)
+const victoryCondition = ref<string | null>(null)
 
 const resources = ref({
   food: 200,
@@ -122,6 +174,7 @@ const selectedUnit = ref<any>(null)
 const selectedBuilding = ref<any>(null)
 const currentFormation = ref('Box')
 const researchedTechs = ref<Set<string>>(new Set())
+const currentPlayerId = ref('player1')
 
 let gameEngine: GameEngine | null = null
 let selectionUpdateInterval: number | null = null
@@ -261,6 +314,11 @@ const handleResearch = (techId: string) => {
 const handleCancelResearch = (index: number) => {
   console.log(`Cancelling research at index ${index}`)
   // TODO: Implement cancel research logic in GameEngine
+}
+
+const openStatistics = () => {
+  showGameMenu.value = false
+  showStatistics.value = true
 }
 
 const goToSettings = () => {
