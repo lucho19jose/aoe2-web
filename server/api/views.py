@@ -1,9 +1,88 @@
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.db import connection
+from django.core.cache import cache
+from django.conf import settings
+import redis
+import logging
+
 from .models import Game, Player
 from .serializers import GameSerializer, PlayerSerializer
+
+logger = logging.getLogger(__name__)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def health_check(request):
+    """
+    Basic health check endpoint - returns 200 if service is up
+    """
+    return Response({
+        'status': 'healthy',
+        'service': 'aoe2-web-api',
+    })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def readiness_check(request):
+    """
+    Readiness check - verifies all dependencies are available
+    Checks: Database, Redis, Cache
+    """
+    checks = {
+        'database': False,
+        'redis': False,
+        'cache': False,
+    }
+
+    all_healthy = True
+
+    # Check database
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        checks['database'] = True
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        all_healthy = False
+
+    # Check Redis connection
+    try:
+        redis_client = redis.Redis(
+            host=settings.CHANNEL_LAYERS['default']['CONFIG']['hosts'][0][0],
+            port=settings.CHANNEL_LAYERS['default']['CONFIG']['hosts'][0][1],
+            socket_connect_timeout=2
+        )
+        redis_client.ping()
+        checks['redis'] = True
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
+        all_healthy = False
+
+    # Check cache
+    try:
+        cache.set('health_check', 'ok', 10)
+        if cache.get('health_check') == 'ok':
+            checks['cache'] = True
+        else:
+            all_healthy = False
+    except Exception as e:
+        logger.error(f"Cache health check failed: {e}")
+        all_healthy = False
+
+    response_data = {
+        'status': 'ready' if all_healthy else 'not_ready',
+        'checks': checks,
+    }
+
+    return Response(
+        response_data,
+        status=status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+    )
 
 
 class GameViewSet(viewsets.ModelViewSet):
