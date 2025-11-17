@@ -128,7 +128,15 @@ let selectionUpdateInterval: number | null = null
 
 onMounted(() => {
   if (gameCanvas.value) {
-    gameEngine = new GameEngine(gameCanvas.value, minimapCanvas.value!)
+    // Load game configuration from session storage
+    const configStr = sessionStorage.getItem('gameConfig')
+    const config = configStr ? JSON.parse(configStr) : null
+
+    if (config) {
+      console.log('🎮 Starting game with config:', config)
+    }
+
+    gameEngine = new GameEngine(gameCanvas.value, minimapCanvas.value!, undefined, config)
 
     // Set resource update callback
     gameEngine.setOnResourcesUpdate((newResources) => {

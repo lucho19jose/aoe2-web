@@ -17,6 +17,9 @@ import { getSoundService, SoundType } from './SoundService'
 import { getStatisticsService } from './StatisticsService'
 import { TECHNOLOGIES } from '@/config/technologies'
 import type { Technology } from '@/config/technologies'
+import { MapGenerator, MAP_SIZES, type MapType, type MapSize } from './MapGenerator'
+import { getCivilization, applyCivilizationBonuses, type Civilization } from '@/config/civilizations'
+import { AGES, getNextAge, canAdvanceAge, type AgeType } from '@/config/ages'
 
 export class GameEngine {
   private canvas: HTMLCanvasElement
@@ -53,6 +56,7 @@ export class GameEngine {
   // AI Manager
   private aiManager: AIManager | null = null
   private wasmInitialized = false
+  private aiConfig: any = null
 
   // Player ID
   private playerId: string = 'player1'
@@ -94,9 +98,45 @@ export class GameEngine {
   // Game time
   private gameTime: number = 0
 
-  constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement, gameId?: string) {
+  // Civilization and Age system
+  private playerCivilization: Civilization | null = null
+  private currentAge: AgeType = 'dark'
+  private isAdvancingAge: boolean = false
+  private ageAdvanceProgress: number = 0
+
+  // Map configuration
+  private mapType: MapType = 'arabia'
+  private mapSize: MapSize = MAP_SIZES.medium
+  private hasInitialTownCenter: boolean = true
+
+  constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement, gameId?: string, config?: any) {
     this.canvas = canvas
     this.minimapCanvas = minimapCanvas
+
+    // Process game configuration
+    if (config) {
+      // Map configuration
+      if (config.map) {
+        this.mapType = config.map.type || 'arabia'
+        const sizeKey = config.map.size || 'medium'
+        this.mapSize = MAP_SIZES[sizeKey] || MAP_SIZES.medium
+      }
+
+      // Civilization configuration
+      if (config.civilization) {
+        this.playerCivilization = getCivilization(config.civilization)
+        if (this.playerCivilization) {
+          console.log(`🏛️ Playing as ${this.playerCivilization.name}`)
+          applyCivilizationBonuses(config.civilization, {})
+        }
+      }
+
+      // AI configuration
+      if (config.ai && config.ai.opponents > 0) {
+        // Store AI config for later initialization
+        this.aiConfig = config.ai
+      }
+    }
 
     // Initialize Three.js scene
     this.scene = new THREE.Scene()
@@ -133,8 +173,8 @@ export class GameEngine {
     // Setup raycaster
     this.raycaster = new THREE.Raycaster()
 
-    // Setup navigation grid (100x100 map) - uses WASM when available
-    this.navigationGrid = new HybridNavigationGrid(100, 1)
+    // Setup navigation grid - size will be updated by map generator
+    this.navigationGrid = new HybridNavigationGrid(this.mapSize.width, 1)
 
     // Setup input handler
     this.inputHandler = new InputHandler(this.canvas)
@@ -618,52 +658,135 @@ export class GameEngine {
     this.scene.add(ambientLight)
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8)
-    directionalLight.position.set(50, 50, 50)
+    const lightRange = Math.max(this.mapSize.width, this.mapSize.height)
+    directionalLight.position.set(lightRange / 2, lightRange / 2, lightRange / 2)
     directionalLight.castShadow = true
-    directionalLight.shadow.camera.left = -50
-    directionalLight.shadow.camera.right = 50
-    directionalLight.shadow.camera.top = 50
-    directionalLight.shadow.camera.bottom = -50
+    directionalLight.shadow.camera.left = -lightRange / 2
+    directionalLight.shadow.camera.right = lightRange / 2
+    directionalLight.shadow.camera.top = lightRange / 2
+    directionalLight.shadow.camera.bottom = -lightRange / 2
     directionalLight.shadow.mapSize.width = 2048
     directionalLight.shadow.mapSize.height = 2048
     this.scene.add(directionalLight)
 
-    // Create terrain
-    const terrainGeometry = new THREE.PlaneGeometry(100, 100, 50, 50)
-    const terrainMaterial = new THREE.MeshStandardMaterial({
-      color: 0x3a7d3a,
-      roughness: 0.8,
-      metalness: 0.2
-    })
-    this.terrain = new THREE.Mesh(terrainGeometry, terrainMaterial)
-    this.terrain.rotation.x = -Math.PI / 2
-    this.terrain.receiveShadow = true
+    // Generate map using MapGenerator
+    const mapGenerator = new MapGenerator(this.mapType, this.mapSize, this.scene)
+    const generatedMap = mapGenerator.generate()
+
+    // Set terrain
+    this.terrain = generatedMap.terrain
     this.scene.add(this.terrain)
 
-    // Add some test units (villagers for harvesting)
-    this.createUnit('unit1', 'villager' as UnitType, { x: 0, y: 0, z: 0 }, 'player1', '#FF0000')
-    this.createUnit('unit2', 'villager' as UnitType, { x: 2, y: 0, z: 0 }, 'player1', '#FF0000')
-    this.createUnit('unit3', 'villager' as UnitType, { x: -2, y: 0, z: 0 }, 'player1', '#FF0000')
+    // Set resources from generated map
+    this.resources = generatedMap.resources
 
-    // Add Town Center for resource deposit
-    this.createBuilding('town_center_1', 'town_center' as BuildingType, { x: 0, y: 0, z: -5 }, 'player1', '#FF0000')
+    // Update navigation grid
+    this.navigationGrid = generatedMap.navigationGrid
 
-    // Spawn resources procedurally
-    this.spawnResources()
+    // Store whether map has initial town center
+    this.hasInitialTownCenter = generatedMap.hasInitialTownCenter
+
+    // Setup player starting position
+    const playerStartPos = generatedMap.playerStartPositions[0] || { x: 0, z: 0 }
+
+    // Add starting units
+    if (this.hasInitialTownCenter) {
+      // Standard start: villagers + town center
+      this.createUnit('unit1', 'villager' as UnitType,
+        { x: playerStartPos.x, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+      this.createUnit('unit2', 'villager' as UnitType,
+        { x: playerStartPos.x + 2, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+      this.createUnit('unit3', 'villager' as UnitType,
+        { x: playerStartPos.x - 2, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+
+      // Add Town Center
+      this.createBuilding('town_center_1', 'town_center' as BuildingType,
+        { x: playerStartPos.x, y: 0, z: playerStartPos.z - 5 }, 'player1', '#FF0000')
+    } else {
+      // Nomad start: only villagers, no town center
+      this.createUnit('unit1', 'villager' as UnitType,
+        { x: playerStartPos.x, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+      this.createUnit('unit2', 'villager' as UnitType,
+        { x: playerStartPos.x + 2, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+      this.createUnit('unit3', 'villager' as UnitType,
+        { x: playerStartPos.x - 2, y: 0, z: playerStartPos.z }, 'player1', '#FF0000')
+
+      console.log('🏕️ Nomad start: No town center. Build one to begin!')
+    }
+
+    // Setup AI players if configured
+    if (this.aiConfig && this.aiConfig.opponents > 0) {
+      this.setupAIPlayers(generatedMap.playerStartPositions)
+    }
 
     // Spawn relics on the map
     this.spawnRelics()
 
     // Add grid helper
-    const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x222222)
+    const gridHelper = new THREE.GridHelper(
+      Math.max(this.mapSize.width, this.mapSize.height),
+      50,
+      0x444444,
+      0x222222
+    )
     this.scene.add(gridHelper)
+
+    console.log(`✅ Map generated: ${this.mapType} (${this.mapSize.name})`)
+  }
+
+  /**
+   * Setup AI players with their starting positions and units
+   */
+  private setupAIPlayers(playerStartPositions: Array<{ x: number; z: number }>) {
+    const numAI = this.aiConfig.opponents
+    const difficulty = this.aiConfig.difficulty || 'medium'
+
+    for (let i = 0; i < numAI; i++) {
+      const aiPlayerId = `ai_player_${i + 1}`
+      const aiColor = this.getAIColor(i)
+      const startPos = playerStartPositions[i + 1] || { x: (i + 1) * 20, z: (i + 1) * 20 }
+
+      // Add AI to AI manager
+      const aiDifficulty: AIDifficulty = difficulty === 'easy' ? 'Easy' : difficulty === 'hard' ? 'Hard' : 'Medium'
+      this.addAIPlayer(aiPlayerId, aiDifficulty)
+
+      // Create starting units for AI
+      if (this.hasInitialTownCenter) {
+        this.createUnit(`${aiPlayerId}_villager1`, 'villager' as UnitType,
+          { x: startPos.x, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+        this.createUnit(`${aiPlayerId}_villager2`, 'villager' as UnitType,
+          { x: startPos.x + 2, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+        this.createUnit(`${aiPlayerId}_villager3`, 'villager' as UnitType,
+          { x: startPos.x - 2, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+
+        this.createBuilding(`${aiPlayerId}_town_center`, 'town_center' as BuildingType,
+          { x: startPos.x, y: 0, z: startPos.z - 5 }, aiPlayerId, aiColor)
+      } else {
+        this.createUnit(`${aiPlayerId}_villager1`, 'villager' as UnitType,
+          { x: startPos.x, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+        this.createUnit(`${aiPlayerId}_villager2`, 'villager' as UnitType,
+          { x: startPos.x + 2, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+        this.createUnit(`${aiPlayerId}_villager3`, 'villager' as UnitType,
+          { x: startPos.x - 2, y: 0, z: startPos.z }, aiPlayerId, aiColor)
+      }
+
+      console.log(`🤖 Created AI player ${i + 1} at position (${startPos.x}, ${startPos.z})`)
+    }
+  }
+
+  /**
+   * Get color for AI player
+   */
+  private getAIColor(index: number): string {
+    const colors = ['#0000FF', '#00FF00', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080']
+    return colors[index % colors.length]
   }
 
   /**
    * Spawn relics procedurally across the map
    */
   private spawnRelics() {
-    const mapSize = 100
+    const mapSize = Math.max(this.mapSize.width, this.mapSize.height)
     const mapMin = -mapSize / 2
     const mapMax = mapSize / 2
     const numRelics = 5 // Standard number of relics in AoE2
@@ -1063,6 +1186,9 @@ export class GameEngine {
     if (this.wasmInitialized && this.aiManager) {
       this.updateAI(deltaTime)
     }
+
+    // Update age advancement
+    this.updateAgeAdvancement(deltaTime)
 
     // Update all entities
     const deadUnits: string[] = []
@@ -1663,6 +1789,113 @@ export class GameEngine {
       cancelAnimationFrame(this.animationFrameId)
       this.animationFrameId = null
     }
+  }
+
+  /**
+   * Get current age
+   */
+  public getCurrentAge(): AgeType {
+    return this.currentAge
+  }
+
+  /**
+   * Get player civilization
+   */
+  public getPlayerCivilization(): Civilization | null {
+    return this.playerCivilization
+  }
+
+  /**
+   * Advance to next age
+   */
+  public advanceAge(): boolean {
+    if (this.isAdvancingAge) {
+      console.warn('Already advancing to next age')
+      return false
+    }
+
+    const nextAge = getNextAge(this.currentAge)
+    if (!nextAge) {
+      console.warn('Already at maximum age')
+      return false
+    }
+
+    // Check if player can advance
+    const buildings = Array.from(this.buildings.values())
+      .filter(b => b.ownerId === this.playerId)
+      .map(b => b.type)
+
+    const canAdvance = canAdvanceAge(
+      this.currentAge,
+      { food: this.playerResources.food, gold: this.playerResources.gold },
+      buildings
+    )
+
+    if (!canAdvance.canAdvance) {
+      console.warn(`Cannot advance: ${canAdvance.reason}`)
+      return false
+    }
+
+    // Deduct resources
+    this.playerResources.food -= nextAge.cost.food
+    this.playerResources.gold -= nextAge.cost.gold
+
+    // Start age advancement
+    this.isAdvancingAge = true
+    this.ageAdvanceProgress = 0
+
+    console.log(`⏳ Advancing to ${nextAge.displayName}...`)
+
+    return true
+  }
+
+  /**
+   * Update age advancement progress
+   */
+  private updateAgeAdvancement(deltaTime: number) {
+    if (!this.isAdvancingAge) return
+
+    const nextAge = getNextAge(this.currentAge)
+    if (!nextAge) {
+      this.isAdvancingAge = false
+      return
+    }
+
+    this.ageAdvanceProgress += deltaTime
+
+    if (this.ageAdvanceProgress >= nextAge.researchTime) {
+      // Age advancement complete
+      this.currentAge = nextAge.id
+      this.isAdvancingAge = false
+      this.ageAdvanceProgress = 0
+
+      console.log(`🎉 Advanced to ${nextAge.displayName}!`)
+      console.log(`Unlocked: ${nextAge.unlocks.units.length} units, ${nextAge.unlocks.buildings.length} buildings, ${nextAge.unlocks.technologies.length} technologies`)
+
+      this.soundService.play(SoundType.RESEARCH_COMPLETE)
+
+      // Notify UI
+      if (this.onResourcesUpdate) {
+        this.onResourcesUpdate(this.playerResources)
+      }
+    }
+  }
+
+  /**
+   * Check if currently advancing age
+   */
+  public isAdvancingToNextAge(): boolean {
+    return this.isAdvancingAge
+  }
+
+  /**
+   * Get age advancement progress (0-1)
+   */
+  public getAgeAdvanceProgress(): number {
+    const nextAge = getNextAge(this.currentAge)
+    if (!nextAge || !this.isAdvancingAge) return 0
+
+    return this.ageAdvanceProgress / nextAge.researchTime
   }
 
   public dispose() {
